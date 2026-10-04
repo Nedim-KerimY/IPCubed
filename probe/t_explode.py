@@ -70,6 +70,7 @@ def main():
     keep = core.rig.s
     pth = next(p for p in snap.copper.pads if not p.npth and p.drill_w >= 0.9)
     core.rig.s = RigState((pth.x, -pth.y, 20.0), 45.0, -30.0, 18.0, keep.fov); core.rig.apply(); shot("ex_1b_pth.png")
+    core.rig.s = RigState((pth.x + 6, -pth.y, 30.0), 14.0, -20.0, 12.0, keep.fov); core.rig.apply(); shot("ex_1c_close.png")
     core.rig.s = keep; core.rig.apply()
     t = time.perf_counter()
     for _ in range(5):
@@ -119,6 +120,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

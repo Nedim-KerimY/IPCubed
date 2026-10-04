@@ -373,7 +373,9 @@ class ViewerScene:
                 d, up, lo = ent
                 top = up.z0 + self._ex.get(up.layer_id, 0.0)
                 bot = lo.z1 + self._ex.get(lo.layer_id, 0.0)
-                sz = max(top - bot, 1e-6) / max(d.z1 - d.z0, 1e-9)
+                eps = min(0.04, max(0.0, (top - bot) - (d.z1 - d.z0)) * 0.1)    # bakir yuzeyiyle ayni duzlem olmasin (z-fighting)
+                top, bot = top - eps, bot + eps
+                sz =max(top - bot, 1e-6) / max(d.z1 - d.z0, 1e-9)
                 m.local.scale = (1.0, 1.0, sz)
                 m.local.position = (0.0, 0.0, bot - d.z0 * sz)
                 continue
