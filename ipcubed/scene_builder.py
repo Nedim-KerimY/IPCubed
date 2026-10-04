@@ -316,6 +316,12 @@ class ViewerScene:
                     gloss.material.env_map_intensity = 3.0 * c.mask_gloss * c.env_intensity
             elif k == "silk":
                 mat.color = c.silk_color
+            if key.split(":")[0] in ("viab", "viabc", "barrel"):          # PTH / via tupleri: exploded view'da opaklik kaydiricisi
+                po = c.pth_opacity if self._ex else 1.0
+                mat.opacity = po
+                want = "solid" if po >= 0.999 else "blend"
+                if getattr(mat, "alpha_mode", None) != want:
+                    mat.alpha_mode = want
         for g in self.groups.values():
             vib = (round(c.model_saturation, 3), round(c.model_contrast, 3))
             for m in g.meshes:

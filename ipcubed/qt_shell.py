@@ -162,6 +162,7 @@ class ViewerShell(QtCore.QObject):
                              hl_active=c.highlight_active(), has_sel=bool(c.hl.selected), can_2d=c.sync is not None,
                              exploded=c.exploded, show_diel=not c.vs.ex_hide_diel,
                              poly_opacity=self.cfg.polygon_opacity, on_poly=self._set_poly_opacity,
+                             pth_opacity=self.cfg.pth_opacity, on_pth=self._set_pth_opacity,
                              hl_polygons=self.cfg.highlight_polygons)
         a_set, a_ref, a_ext, a_ret, a_2d = A["settings"], A["refresh"], A["external"], A["return"], A["to2d"]
         act = menu.exec(self.canvas.mapToGlobal(pos))
@@ -209,6 +210,13 @@ class ViewerShell(QtCore.QObject):
     def _set_poly_opacity(self, v: float):
         """Exploded view: zone/pour opakligi (menudeki kaydirici, canli)."""
         self.cfg.polygon_opacity = float(v)
+        self.core.vs.apply_settings()
+        self.core.request_draw()
+        self._schedule_save()
+
+    def _set_pth_opacity(self, v: float):
+        """Exploded view: PTH / via tup opakligi (menudeki kaydirici, canli)."""
+        self.cfg.pth_opacity = float(v)
         self.core.vs.apply_settings()
         self.core.request_draw()
         self._schedule_save()

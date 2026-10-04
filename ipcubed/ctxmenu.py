@@ -1,4 +1,4 @@
-﻿"""3D gorunum sag tik menusu (KiCad temali). Kabuktan ayri: cevrimdisi (offscreen) render ile test edilebilir."""
+"""3D gorunum sag tik menusu (KiCad temali). Kabuktan ayri: cevrimdisi (offscreen) render ile test edilebilir."""
 from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -29,9 +29,10 @@ def _slider_action(menu, text: str, value: float, cb):
         f"QSlider::sub-page:horizontal {{ background: {theme.ACCENT}; border-radius: 2px; }}"
         "QSlider::handle:horizontal { background: #ffffff; width: 12px; margin: -5px 0; border-radius: 6px; }")
     lay = QtWidgets.QHBoxLayout(w)
-    lay.setContentsMargins(58, 4, 14, 4)
+    lay.setContentsMargins(54, 6, 28, 6)      # olculdu (probe/t_menu_align.py): satir metni x=60, kisayol sutunu sag kenari = menu - 28
     lay.setSpacing(10)
     lab = QtWidgets.QLabel(text)
+    lab.setMinimumWidth(104)
     sl = QtWidgets.QSlider(QtCore.Qt.Horizontal)
     sl.setRange(0, 100)
     sl.setValue(int(round(value * 100)))
@@ -53,12 +54,13 @@ def _slider_action(menu, text: str, value: float, cb):
 
 def build_menu(parent, settings_open: bool, embedded: bool, external: bool, cube_on: bool = True, stats_on: bool = False,
                hl_active: bool = False, has_sel: bool = False, can_2d: bool = False, exploded: bool = False,
-               show_diel: bool = True, poly_opacity: float = 1.0, on_poly=None, hl_polygons: bool = True):
+               show_diel: bool = True, poly_opacity: float = 1.0, on_poly=None, hl_polygons: bool = True,
+               pth_opacity: float = 1.0, on_pth=None):
     """-> (menu, {'settings','refresh','external','return','to2d': QAction | None})"""
     menu = QtWidgets.QMenu(parent)
     theme.style_menu(menu)
     acts: dict = dict.fromkeys(("settings", "cube", "refresh", "stats", "external", "return", "to2d", "nethl", "stophl", "hl2d", "explode", "diel", "hlpoly"))
-    acts["settings"] = menu.addAction("3D Settingsâ€¦")
+    acts["settings"] = menu.addAction("3D Settings")
     acts["settings"].setCheckable(True)
     acts["settings"].setChecked(settings_open)
     acts["cube"] = menu.addAction("ViewCube")
@@ -77,6 +79,7 @@ def build_menu(parent, settings_open: bool, embedded: bool, external: bool, cube
         acts["diel"].setCheckable(True)
         acts["diel"].setChecked(show_diel)
         menu.addAction(_slider_action(menu, "Polygon Opacity", poly_opacity, on_poly))
+        menu.addAction(_slider_action(menu, "PTH Opacity", pth_opacity, on_pth))
     if hl_active:
         acts["stophl"] = menu.addAction("Stop Highlighting\tESC")
         acts["hlpoly"] = menu.addAction(f"Highlight Polygons: {'True' if hl_polygons else 'False'}")

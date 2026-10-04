@@ -55,8 +55,16 @@ def main():
         mats = {vs.layer_meshes[k].material.opacity for k in zones}
         print(f"polygon opacity {op}: zone mesh sayisi {len(zones)}, malzeme opakligi {mats}, alpha {vs.layer_meshes[zones[0]].material.alpha_mode}")
         shot(f"poly_{int(op * 100)}.png")
-    cfg.polygon_opacity = 1.0; vs.apply_settings()
+    tubes = [k for k in vs.layer_meshes if k.split(":")[0] in ("viab", "viabc", "barrel")]
+    for op in (1.0, 0.25):
+        cfg.pth_opacity = op; vs.apply_settings()
+        print(f"PTH opacity {op}: tup mesh {tubes}, opakliklar {sorted({round(vs.layer_meshes[k].material.opacity, 3) for k in tubes})}, alpha {vs.layer_meshes[tubes[0]].material.alpha_mode}")
+        shot(f"pth_{int(op * 100)}.png")
+    cfg.pth_opacity = 0.25; cfg.polygon_opacity = 1.0; vs.apply_settings()
     core.toggle_explode(False); settle()
+    print("kapaninca tup opakligi:", sorted({round(vs.layer_meshes[k].material.opacity, 3) for k in tubes}))
+    cfg.pth_opacity = 1.0; vs.apply_settings()
+
     print("kapaninca zone opakligi:", {vs.layer_meshes[k].material.opacity for k in zones})
     # Highlight Polygons: True / False (VDDQ zone'lu net)
     names = snap.copper.net_names
