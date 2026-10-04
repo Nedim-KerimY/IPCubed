@@ -20,11 +20,12 @@ def rec_icon() -> QtGui.QIcon:
 
 
 def build_menu(parent, settings_open: bool, embedded: bool, external: bool, cube_on: bool = True, stats_on: bool = False,
-               hl_active: bool = False, has_sel: bool = False, can_2d: bool = False, exploded: bool = False):
+               hl_active: bool = False, has_sel: bool = False, can_2d: bool = False, exploded: bool = False,
+               show_diel: bool = True):
     """-> (menu, {'settings','refresh','external','return','to2d': QAction | None})"""
     menu = QtWidgets.QMenu(parent)
     theme.style_menu(menu)
-    acts: dict = dict.fromkeys(("settings", "cube", "refresh", "stats", "external", "return", "to2d", "nethl", "stophl", "hl2d", "explode"))
+    acts: dict = dict.fromkeys(("settings", "cube", "refresh", "stats", "external", "return", "to2d", "nethl", "stophl", "hl2d", "explode", "diel"))
     acts["settings"] = menu.addAction("3D Settings…")
     acts["settings"].setCheckable(True)
     acts["settings"].setChecked(settings_open)
@@ -39,6 +40,10 @@ def build_menu(parent, settings_open: bool, embedded: bool, external: bool, cube
     acts["explode"] = menu.addAction("Exploded Board View")
     acts["explode"].setCheckable(True)
     acts["explode"].setChecked(exploded)
+    if exploded:
+        acts["diel"] = menu.addAction("Show Dielectric")
+        acts["diel"].setCheckable(True)
+        acts["diel"].setChecked(show_diel)
     if hl_active:
         acts["stophl"] = menu.addAction("Stop Highlighting\tESC")
     else:

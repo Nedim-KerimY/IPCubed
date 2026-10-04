@@ -159,6 +159,7 @@ class ViewerScene:
         self._warm_key = None
         self._warm_futs: list = []
         self._ex: dict = {}                              # exploded view: bakir layer_id -> ek z (mm); bos = normal
+        self.ex_hide_diel = False                        # exploded view'da dielektrik gizli mi
         self._tube_base: dict = {}                       # tup mesh'leri: (pozisyon tamponu, ozgun z, son ofset imzasi)
         self.keep_pool = False                           # 3D acikken is havuzu uzun sure acik kalir (anlik maske guncellemesi)
         self._pad_clip = None
@@ -274,6 +275,8 @@ class ViewerScene:
             elif key.startswith("diel:"):
                 merged = self._diel_merged()
                 vis = merged if key == "diel:all" else (not merged and c.visible(key))
+                if self._ex and self.ex_hide_diel:
+                    vis = False                              # exploded view: sag tik "Show Dielectric" kapali
             m.visible = vis
             mat = m.material
             if k == "cu":

@@ -456,7 +456,7 @@ class ViewerCore:
         self._ex_sig = sig
         self.ex.build([(l.key, l.name, self.cfg.visible(l.key)) for l in cu], (0.0, 0.0), math.hypot(b[2] - b[0], b[3] - b[1]))
         s = self.ex.size
-        self.ex.corner = (b[2] + 1.6 * s, b[1] + 1.6 * s)          # sag alt kosenin hemen disi
+        self.ex.corner = (b[2] + 4.0 * s, b[1] + 4.0 * s)          # sag alt kosenin hemen disi
         self._ex_flags = None
         if self._ex_off is not None and len(self._ex_off) != len(cu):
             self._ex_off = None

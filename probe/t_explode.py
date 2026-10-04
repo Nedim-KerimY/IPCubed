@@ -67,6 +67,7 @@ def main():
     settle()
     print(f"patlatma animasyonu bitti: {(time.perf_counter() - t) * 1000:.0f} ms; ofset {np.round(core._ex_off, 2).tolist()}")
     shot("ex_1_exploded.png")
+    vs.ex_hide_diel = True; vs.apply_settings(); shot("ex_1d_nodiel.png"); vs.ex_hide_diel = False; vs.apply_settings()
     keep = core.rig.s
     pth = next(p for p in snap.copper.pads if not p.npth and p.drill_w >= 0.9)
     core.rig.s = RigState((pth.x, -pth.y, 20.0), 45.0, -30.0, 18.0, keep.fov); core.rig.apply(); shot("ex_1b_pth.png")
@@ -120,6 +121,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
