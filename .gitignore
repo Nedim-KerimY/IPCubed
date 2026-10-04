@@ -1,0 +1,9 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Test / render outputs
+*.png
+*.pkl
+!docs/**/*.png

@@ -1,0 +1,19 @@
+# kicadview: Python 3.11+ (KiCad'in kendi Python'u ya da sistem Python'u)
+kicad-python>=0.8.0        # KiCad IPC API istemcisi (kipy)
+pygfx>=0.17
+wgpu>=0.32
+rendercanvas>=2.7
+PySide6>=6.8
+numpy
+shapely>=2.1
+mapbox_earcut
+cadquery-ocp               # STEP modelleri (OpenCascade)
+trimesh
+matplotlib                 # silkscreen yazi geometrisi (DejaVu)
+pillow
+psutil
+zstandard                  # kart icine gomulu 3D modeller
+pynng
+protobuf
+# yalniz Linux/X11: KiCad penceresinin uzerine bindirme + '3' kisayolu
+python-xlib; sys_platform == "linux"
