@@ -312,6 +312,9 @@ class ViewerCore:
                 dirty = True
             elif kind == "partial":
                 self.vs.update_partial(*payload)
+                if payload[1].get("stack"):
+                    self.vs.apply_settings()                # yeni kaplama rengi hemen
+                    self.on_snapshot(payload[0])            # panel: stackup listesi + kaplama turu
                 dirty = True
             elif kind == "geom":
                 self.vs.update_geometry(payload)

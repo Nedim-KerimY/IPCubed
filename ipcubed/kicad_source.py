@@ -141,6 +141,43 @@ def _footprint_data(f) -> FootprintData:
     )
 
 
+def _mask_cut_box(sd):
+    """Maske katmanlarindaki (F/B.Mask) grafik/yazi cutout'larinin kapsayici kutusu (KiCad koord.) ya da None."""
+    if sd is None:
+        return None
+    xs, ys = [], []
+    for lay in (41, 42):
+        for it in sd.extra_shapes.get(lay, []) or []:
+            kind = it[0]
+            if kind == "seg":
+                xs += [it[1], it[3]]; ys += [it[2], it[4]]
+            elif kind == "poly":
+                arr = np.asarray(it[1]); xs += [arr[:, 0].min(), arr[:, 0].max()]; ys += [arr[:, 1].min(), arr[:, 1].max()]
+            elif kind == "circle":
+                xs += [it[1] - it[3], it[1] + it[3]]; ys += [it[2] - it[3], it[2] + it[3]]
+            elif kind == "arc":
+                for p in it[1:4]:
+                    xs.append(p[0]); ys.append(p[1])
+        for t in sd.extra_texts.get(lay, []) or []:
+            r = max(t.get("sx", 1.0), t.get("sy", 1.0)) * (len(str(t.get("value", ""))) + 2)
+            xs += [t["x"] - r, t["x"] + r]; ys += [t["y"] - r, t["y"] + r]
+    if not xs:
+        return None
+    return (min(xs) - 1.0, min(ys) - 1.0, max(xs) + 1.0, max(ys) + 1.0)
+
+
+def _tracks_touch(old, new, box) -> bool:
+    """Eklenen/silinen iz parcalarindan biri kutuya degiyor mu?"""
+    o = {tuple(np.round(r, 6)) for r in (old if old is not None else np.zeros((0, 6)))}
+    n = {tuple(np.round(r, 6)) for r in (new if new is not None else np.zeros((0, 6)))}
+    x0, y0, x1, y1 = box
+    for r in o ^ n:
+        w = r[4] / 2
+        if max(r[0], r[2]) + w >= x0 and min(r[0], r[2]) - w <= x1 and max(r[1], r[3]) + w >= y0 and min(r[1], r[3]) - w <= y1:
+            return True
+    return False
+
+
 def _same(a, b) -> bool:
     if a is None or b is None:
         return a is None and b is None or (a is not None and len(a) == 0) or (b is not None and len(b) == 0)
@@ -238,7 +275,16 @@ class KiCadSource:
         from kipy.proto.common.types import KiCadObjectType as K
         groups = ([K.KOT_PCB_TRACE, K.KOT_PCB_ARC], [K.KOT_PCB_VIA], [K.KOT_PCB_ZONE], [K.KOT_PCB_PAD],
                   [K.KOT_PCB_SHAPE], [K.KOT_PCB_TEXT, K.KOT_PCB_TEXTBOX])
-        return tuple(self._raw_hash(g) for g in groups)
+        return tuple(self._raw_hash(g) for g in groups) + (self._stackup_hash(),)
+
+    def _stackup_hash(self) -> str:
+        """Kart stackup'i (kalinliklar, yuzey kaplama turu, renkler) ham hash'i: Board Setup degisince yakalanir."""
+        import hashlib
+        from kipy.proto.board import board_commands_pb2
+        cmd = board_commands_pb2.GetBoardStackup()
+        cmd.board.CopyFrom(self.board._doc)
+        resp = self.board._kicad.send(cmd, board_commands_pb2.BoardStackupResponse)
+        return hashlib.blake2b(resp.SerializeToString(), digest_size=8).hexdigest()
 
     def refresh_tracks(self, prev: BoardSnapshot):
         """Yalniz izler degisti: izleri yeniden cek, katman katman karsilastir. -> (yeni snapshot, degisen bakir katman idleri)."""
@@ -303,9 +349,12 @@ class KiCadSource:
             tr = fetch_tracks(b, ids, nid)
             new["tracks"] = tr
             plan["tracks"] |= {L for L in ids if not _same(cd.tracks.get(L), tr.get(L))}
-            s = prev.silk                            # maske cutout'u altindaki iz de acikta kalan bakir (kaplama): tam katman
-            if s is not None and any(s.extra_shapes.get(m) or s.extra_texts.get(m) for m in (41, 42)):
-                plan["cu"] |= plan["tracks"] & {3, 34}
+            s = prev.silk                            # maske cutout'u altindaki iz acikta kalan bakirdir (kaplama): yalniz cutout'a
+            cut_box = _mask_cut_box(s)                   # degen iz degisiminde tam katman gerekir; digerleri yalniz iz mesh'i
+            if cut_box is not None:
+                for L in plan["tracks"] & {3, 34}:
+                    if _tracks_touch(cd.tracks.get(L), tr.get(L), cut_box):
+                        plan["cu"].add(L)
         if 1 in diff:
             nv = fetch_vias(b, ids, nid)
             new["vias"] = nv
@@ -339,6 +388,15 @@ class KiCadSource:
             s = prev.silk                            # maske cutout'u (logo) altindaki zone acikta kalan bakir = kaplama: tam katman gerekir
             if s is not None and any(s.extra_shapes.get(m) or s.extra_texts.get(m) for m in (41, 42)):
                 plan["cu"] |= plan["zones"] & {3, 34}
+        stack = prev.stack
+        if 6 in diff:                                    # Board Setup: stackup / yuzey kaplama turu degisti
+            from .stackup import fetch_stackup
+            stack = fetch_stackup(b)
+            zs = lambda s: [(l.key, round(l.z0, 6), round(l.z1, 6)) for l in s.layers]
+            if zs(stack) != zs(prev.stack):
+                plan["refull"] = True                    # kalinlik / katman degisti: modeller dahil tam yukleme
+            else:
+                plan["stack"] = True                     # yalniz kaplama turu / renk: yeniden uretim yok, renk aninda
         sd, outline = prev.silk, prev.outline_lines
         if 4 in diff or 5 in diff:
             from .silk import fetch_silk
@@ -354,7 +412,7 @@ class KiCadSource:
             if lay & {41, 42}:
                 plan["body"] = True
         cd2 = dataclasses.replace(cd, net_names=names, **new)
-        return dataclasses.replace(prev, copper=cd2, silk=sd, outline_lines=outline, poses=poses), plan
+        return dataclasses.replace(prev, copper=cd2, silk=sd, outline_lines=outline, poses=poses, stack=stack), plan
 
     def pad_signature(self) -> dict[str, int]:
         """footprint KIID -> pad konum hash'i. ~45 ms, tum kart icin."""

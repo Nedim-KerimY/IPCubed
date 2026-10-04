@@ -52,7 +52,8 @@ class ViewerShell(QtCore.QObject):
         from .settings import Settings
 
         self.cfg = Settings.load()
-        self.canvas = QRenderWidget()
+        # vsync kapali: kare suresi 16.7 ms'yi biraz asinca 60'tan 30 FPS'e dusmesin (ekran 60 Hz)
+        self.canvas = QRenderWidget(vsync=False)
         self.canvas.setMinimumSize(320, 240)
         self.core = ViewerCore(self.canvas, self.cfg)
         self.settings_win = SettingsWindow(self.cfg, self._on_setting, self._rebuild_mask, self._on_models_hidden)

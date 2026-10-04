@@ -137,6 +137,8 @@ class ViewerScene:
         self._base_fp: dict = {}                         # taban mesh'lerin uretildigi andaki footprint konumlari
         self._batch: dict | None = None                  # ayni kart yenilemesi: sonuclar hepsi bitince TEK SEFERDE uygulanir
         self._batch_poses: dict = {}
+        self._tiles: dict = {}                           # karo grubu -> {karo: mesh}
+        self._tile_dirty: set = set()
         self._pending_plan: dict | None = None           # kismi yenileme: henuz uygulanmamis birlesik plan
         self._dyn_sig = None
         self._pad_sync_needed = False
@@ -245,6 +247,8 @@ class ViewerScene:
         self.fill.intensity = c.fill_level * c.light_intensity
         if hasattr(self.background.material, "set_colors"):
             self.background.material.set_colors(c.bg_top, c.bg_bottom)
+        if self.stack is not None and not self._diel_merged():
+            self._ensure_slabs()                   # katman katman gorunum gerekiyor (gizli katman / saydam govde)
         for key, m in self.layer_meshes.items():
             k = self._kind(key)
             base = key[:-4] if key.endswith(":dyn") else key
@@ -260,8 +264,8 @@ class ViewerScene:
             elif k in ("drill", "barrel") or key.startswith("viab"):
                 vis = c.show_pads
             elif key.startswith("diel:"):
-                ds = [l.key for l in self.stack.layers if l.kind == "dielectric"] if self.stack is not None else []
-                vis = any(c.visible(d) for d in ds) if ds else True
+                merged = self._diel_merged()
+                vis = merged if key == "diel:all" else (not merged and c.visible(key))
             m.visible = vis
             mat = m.material
             if k == "cu":
@@ -456,6 +460,11 @@ class ViewerScene:
         Bekleyen onceki kismi planla birlestirilir (iptal edilen isler kaybolmasin); sonuclar tek seferde uygulanir."""
         if plan.get("full") or snap.stack is None or snap.copper is None:
             return self.update_geometry(snap)
+        if plan.get("stack"):
+            self.stack = snap.stack                        # yuzey kaplama turu vb.: yalniz renk -> aninda
+            if not any(plan.get(k) for k in ("cu", "tracks", "zones", "body", "body_tiles", "vias", "barrel", "silk", "pads")):
+                self._snap = snap
+                return                                     # yeniden uretilecek geometri yok: bekleyen isleri iptal etme
         prev = self._pending_plan or {"cu": set(), "tracks": set(), "zones": set(), "body": False, "body_tiles": set(), "vias": False,
                                       "barrel": False, "silk": False, "pads": False}
         m = {"cu": set(prev["cu"]) | set(plan["cu"]), "tracks": set(prev["tracks"]) | set(plan["tracks"]),
@@ -547,6 +556,8 @@ class ViewerScene:
         self.layer_tags.clear()
         self._tri.clear()
         self._dyn_sig = None
+        self._tiles.clear(); self._tile_dirty.clear()
+        self._slab_keys = []; self._slab_src = None
 
     def _submit_layers(self, snap: BoardSnapshot):
         if snap.copper is None or snap.stack is None:
@@ -684,7 +695,71 @@ class ViewerScene:
                 g.mesh = m
 
     # ------------------------------------------------------------------ dongu
+    _TILE = __import__("re").compile(r"^(diel|mask:top|mask:bottom):t(\d+)$")
+
     def _add_layer(self, key: str, mesh):
+        """Govde/maske karolari tek tek cizilmez (100+ cizim cagrisi FPS'i dusuruyordu): karo sakla, sonra birlestir."""
+        m = self._TILE.match(key)
+        if m or key == "diel:walls":
+            group = m.group(1) if m else "diel"
+            tile = int(m.group(2)) if m else -1
+            self._tiles.setdefault(group, {})[tile] = mesh
+            self._tile_dirty.add(group)
+            return
+        self._add_layer_real(key, mesh)
+
+    def _compose_tiles(self):
+        """Degisen karo gruplarini tek mesh'e birlestir: diel:all, mask:top, mask:bottom (karo basina yeniden uretim korunur)."""
+        if not self._tile_dirty:
+            return
+        from .prism import merge
+        for group in sorted(self._tile_dirty):
+            tiles = self._tiles.get(group, {})
+            mesh = merge([tiles[k] for k in sorted(tiles)])
+            self._add_layer_real("diel:all" if group == "diel" else group, mesh)
+            if group == "diel":
+                self._drop_slabs()
+        self._tile_dirty.clear()
+
+    # --- dielektrik: varsayilan TEK govde (hizli); bir katman gizlenince ya da govde saydamken katman katman levhalar ---------
+    def _diel_merged(self) -> bool:
+        c = self.cfg
+        ds = [l.key for l in self.stack.layers if l.kind == "dielectric"] if self.stack is not None else []
+        return all(c.visible(d) for d in ds) and c.substrate_opacity >= 0.999
+
+    def _drop_slabs(self):
+        for k in list(getattr(self, "_slab_keys", ())):
+            m = self.layer_meshes.pop(k, None)
+            if m is not None:
+                self.root.remove(m)
+        self._slab_keys = []
+        self._slab_src = None
+
+    def _ensure_slabs(self):
+        """Tek govdeden her dielektrik (core/prepreg) icin ayri levha: ayni ucgenler, z araligi o katmana olceklenir (ucgenleme yok)."""
+        m = self.layer_meshes.get("diel:all")
+        if m is None or self.stack is None or getattr(self, "_slab_src", None) is m:
+            return
+        self._drop_slabs()
+        geo = m.geometry
+        P = geo.positions.data
+        N = geo.normals.data
+        T = geo.indices.data
+        G = self.layer_tags.get("diel:all")
+        z0, z1 = float(P[:, 2].min()), float(P[:, 2].max())
+        span = max(z1 - z0, 1e-9)
+        keys = []
+        for l in self.stack.layers:
+            if l.kind != "dielectric":
+                continue
+            P2 = P.copy()
+            P2[:, 2] = l.z0 + (P[:, 2] - z0) / span * (l.z1 - l.z0)
+            self._add_layer_real(l.key, (P2, N, T, G if G is not None else np.zeros(len(P2), np.int32)))
+            keys.append(l.key)
+        self._slab_keys = keys
+        self._slab_src = m
+
+    def _add_layer_real(self, key: str, mesh):
         P, N, T, G = mesh
         self._diel_key.pop(key, None)
         if len(T) == 0:
@@ -790,6 +865,9 @@ class ViewerScene:
             for g in self.groups.values():
                 if g.path == path and not g.meshes:
                     self._build_group_mesh(g)
+            changed = True
+        if self._tile_dirty:
+            self._compose_tiles()
             changed = True
         if self._pad_sync_needed:
             self._pad_sync_needed = False

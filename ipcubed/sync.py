@@ -74,6 +74,10 @@ class SyncThread(threading.Thread):
                         diff = [i for i in range(len(gs)) if gs[i] != geom_ref[i]]
                         # yalniz degisen kategori cekilir, yalniz etkilenen katmanlar yeniden uretilir
                         prev_snap, plan = src.refresh_partial(prev_snap, diff)
+                        if plan.get("refull"):                 # stackup kalinligi degisti: modeller dahil tam yukleme
+                            self.request_full.set()
+                            geom_ref = gs
+                            continue
                         # degisen katmanlarin iz/zone verisi plana eklenir: o isler buyuk veri dosyasini okumadan baslar
                         cdn = prev_snap.copper
                         plan["track_data"] = {L: cdn.tracks.get(L) for L in plan["tracks"]}
