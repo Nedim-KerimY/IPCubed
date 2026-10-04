@@ -27,7 +27,7 @@ def main():
     snap.poses = {}; snap.data_path = None
     W, H = 1400, 900
     canvas = RenderCanvas(size=(W, H), pixel_ratio=1)
-    cfg = Settings(); cfg.show_inner_copper = True
+    cfg = Settings(); cfg.show_inner_copper = bool(os.environ.get("INNER"))
     if os.environ.get("NOMODELS"):
         cfg.show_comp_top = cfg.show_comp_bottom = False
     core = ViewerCore(canvas, cfg)
@@ -60,6 +60,11 @@ def main():
         core.tick()
 
     core.tick(); view(); core.tick(); shot("ex_0_normal.png")
+    kk = core.rig.s
+    core.rig.s = RigState((b[0] + 3, (b[1] + b[3]) / 2, 0.8), 9.0, -80.0, 12.0, kk.fov); core.rig.apply(); shot("ex_0b_edge.png")
+    core.rig.s = kk; core.rig.apply()
+    print("normal modda levha modu:", not vs._diel_merged(), "opaklik", cfg.substrate_opacity)
+    inner_before = [core.cfg.visible(l.key) for l in core._ex_layers()]
     t = time.perf_counter()
     core.toggle_explode(True)
     core.tick()
@@ -84,7 +89,7 @@ def main():
 
     def scr(i, small=False):
         x = c[0] + (core.ex.size * 1.65 if small else 0)
-        return core._to_screen((x, c[1], (cu[i].z0 + cu[i].z1) / 2 + float(core._ex_current()[i])))
+        return core._to_screen((x, c[1], core._ex_gizmo_z(cu, core._ex_current())[i]))
     p = scr(3)
     print("pick In3 buyuk:", core._ex_pick(*p), "kucuk:", core._ex_pick(*scr(3, True)))
     core._on_event(Ev("pointer_move", p[0], p[1])); core.tick()
@@ -114,6 +119,8 @@ def main():
     print(f"kucuk kup tik {key}: {v0} -> {core.cfg.visible(key)}")
     shot("ex_4_toggled.png")
     core.toggle_explode(False); settle()
+    inner_after = [core.cfg.visible(l.key) for l in core._ex_layers()]
+    print("ic katman gorunurlugu once/sonra:", inner_before, inner_after)
     print("geri donus: dielektrik tek govde:", vs._diel_merged(), "tup tabani temiz:", not vs._tube_base, "gizmo gizli:", not core.ex.group.visible)
     shot("ex_5_back.png")
     core.close()
@@ -121,6 +128,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

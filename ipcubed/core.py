@@ -1,4 +1,4 @@
-﻿"""ViewerCore: sahne + kamera + giris + KiCad senkronu. Pencere sistemi (Qt) bilmez."""
+"""ViewerCore: sahne + kamera + giris + KiCad senkronu. Pencere sistemi (Qt) bilmez."""
 from __future__ import annotations
 
 import queue
@@ -416,6 +416,7 @@ class ViewerCore:
         self._ex_drag = None
         self._ex_hover_pos = None
         self._ex_dirty = False
+        self._ex_forced: dict = {}           # patlatma icin gecici acilan ic katmanlar: anahtar -> onceki acik ayar (yoksa _MISSING)
         self.on_layers_changed = lambda key: None
         self._ex_label_key = None
         self._ex_label_tex = gfx.Texture(np.zeros((4, 4, 4), np.uint8), dim=2)
@@ -439,11 +440,34 @@ class ViewerCore:
         n = len(cu)
         if on and (self._ex_off is None or len(self._ex_off) != n):
             b = self.vs.board_bounds
-            gap = min(8.0, max(2.0, math.hypot(b[2] - b[0], b[3] - b[1]) * 0.025))
+            gap = min(8.0, max(2.0, math.hypot(b[2] - b[0], b[3] - b[1]) * 0.025, self._ex_minsep() * 1.4))
             self._ex_off = np.array([(n - 1 - i) * gap for i in range(n)], float)
         self.exploded = on
+        if on:
+            self._ex_open_inner(cu)
         self._ex_anim = (time.perf_counter(), self._ex_t, 1.0 if on else 0.0)
         self.request_draw()
+
+    _MISSING = object()
+
+    def _ex_open_inner(self, cu):
+        """Exploded view acilinca KAPALI ic bakir katmanlari ac (zaten acik olanlara dokunma); eski hale donunce geri kapanir."""
+        for l in cu:
+            if l.side is None and not self.cfg.visible(l.key) and l.key not in self._ex_forced:
+                self._ex_forced[l.key] = self.cfg.layer_visible.get(l.key, self._MISSING)
+                self.cfg.layer_visible[l.key] = True
+                self.on_layers_changed(l.key)
+        self.vs.apply_settings()
+
+    def _ex_restore_inner(self):
+        for key, prev in self._ex_forced.items():
+            if prev is self._MISSING:
+                self.cfg.layer_visible.pop(key, None)
+            else:
+                self.cfg.layer_visible[key] = prev
+            self.on_layers_changed(key)
+        self._ex_forced = {}
+        self.vs.apply_settings()
 
     def _ex_build(self):
         """Gizmo: kartin sag alt kosesinde, her bakir katman icin bir kup (stackup / kart degisince yeniden)."""
@@ -469,6 +493,18 @@ class ViewerCore:
         e = u * u * (3 - 2 * u)
         return self._ex_off * e if self._ex_off is not None else None
 
+    def _ex_minsep(self) -> float:
+        """Gizmo kuplerinin birbirine degmemesi icin en az dikey aralik (mm)."""
+        return self.ex.size * 1.3
+
+    def _ex_gizmo_z(self, cu, off):
+        """Kup yuksekleri: katmanlarin gercek yuksekligi; ust uste binecekse (animasyon, kucuk aralik) alttan uste dogru acilir."""
+        zs = [(l.z0 + l.z1) / 2 + float(off[i]) for i, l in enumerate(cu)]
+        ms = self._ex_minsep()
+        for i in range(len(zs) - 2, -1, -1):
+            zs[i] = max(zs[i], zs[i + 1] + ms)
+        return zs
+
     def _ex_apply(self):
         cu = self._ex_layers()
         off = self._ex_current()
@@ -478,7 +514,7 @@ class ViewerCore:
             return
         on = self._ex_t > 1e-4
         self.vs.set_explode({l.layer_id: float(off[i]) for i, l in enumerate(cu)} if on else None)
-        self.ex.place([(l.z0 + l.z1) / 2 + float(off[i]) for i, l in enumerate(cu)])
+        self.ex.place(self._ex_gizmo_z(cu, off))
         self.ex.group.visible = on
 
     def _ex_tick(self) -> bool:
@@ -496,6 +532,8 @@ class ViewerCore:
             self._ex_t = a + (b - a) * u
             if u >= 1.0:
                 self._ex_anim = None
+                if not self.exploded and self._ex_forced:
+                    self._ex_restore_inner()          # kapanis animasyonu bitti: ic katmanlar eski haline
             self._ex_dirty = True
             self._interacting()
         if self._ex_dirty:
@@ -560,7 +598,7 @@ class ViewerCore:
             cu = self._ex_layers()
             i = d["hit"][1]
             n = len(cu)
-            z = (cu[i].z0 + cu[i].z1) / 2 + float(self._ex_current()[i])
+            z = self._ex_gizmo_z(cu, self._ex_current())[i]
             c = self.ex.corner
             s0, s1 = self._to_screen((c[0], c[1], z)), self._to_screen((c[0], c[1], z + 1.0))
             if s0 is None or s1 is None:
@@ -571,11 +609,12 @@ class ViewerCore:
             off = start.copy()
             if "Shift" in tuple(e.modifiers):             # tum araliklar esit
                 ref = i if i < n - 1 else 0
-                g = max(0.0, (start[ref] + dz) / (n - 1 - ref)) if n > 1 else 0.0
+                g = max(self._ex_minsep(), (start[ref] + dz) / (n - 1 - ref)) if n > 1 else 0.0
                 off = np.array([(n - 1 - j) * g for j in range(n)], float)
             elif i < n - 1:                               # en alt (B.Cu) sabit; katmanlar birbirinin icinden gecmez
-                hi = off[i - 1] if i > 0 else np.inf
-                off[i] = float(np.clip(start[i] + dz, off[i + 1], hi))
+                ms = self._ex_minsep()
+                hi = off[i - 1] - ms if i > 0 else np.inf
+                off[i] = float(np.clip(start[i] + dz, off[i + 1] + ms, max(hi, off[i + 1] + ms)))
             self._ex_off = off
             self._ex_t = 1.0
             self._ex_anim = None
@@ -617,7 +656,7 @@ class ViewerCore:
             self._ex_label_size = (arr.shape[1] / ratio, arr.shape[0] / ratio)
         off = self._ex_current()
         c = self.ex.corner
-        p = self._to_screen((c[0], c[1], (cu[i].z0 + cu[i].z1) / 2 + float(off[i])))
+        p = self._to_screen((c[0], c[1], self._ex_gizmo_z(cu, off)[i]))
         if p is None:
             self._ex_label.visible = False
             return

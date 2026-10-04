@@ -376,11 +376,10 @@ class ViewerScene:
                 d, up, lo = ent
                 top = up.z0 + self._ex.get(up.layer_id, 0.0)
                 bot = lo.z1 + self._ex.get(lo.layer_id, 0.0)
-                eps = min(0.04, max(0.0, (top - bot) - (d.z1 - d.z0)) * 0.1)    # bakir yuzeyiyle ayni duzlem olmasin (z-fighting)
-                top, bot = top - eps, bot + eps
-                sz =max(top - bot, 1e-6) / max(d.z1 - d.z0, 1e-9)
+                e = self._slab_eps(d)                      # mesh zaten [z0+e, z1-e] araliginda (bakir yuzeyiyle ayni duzlemde degil)
+                sz = max(top - bot - 2 * e, 1e-6) / max(d.z1 - d.z0 - 2 * e, 1e-9)
                 m.local.scale = (1.0, 1.0, sz)
-                m.local.position = (0.0, 0.0, bot - d.z0 * sz)
+                m.local.position = (0.0, 0.0, (bot + e) - (d.z0 + e) * sz)
                 continue
             pos = (0.0, 0.0, self._ex_dz(key, maps))
             m.local.position = pos
@@ -838,6 +837,10 @@ class ViewerScene:
         self._slab_keys = []
         self._slab_src = None
 
+    @staticmethod
+    def _slab_eps(l) -> float:
+        return min(0.004, 0.2 * (l.z1 - l.z0))
+
     def _ensure_slabs(self):
         """Tek govdeden her dielektrik (core/prepreg) icin ayri levha: ayni ucgenler, z araligi o katmana olceklenir (ucgenleme yok)."""
         m = self.layer_meshes.get("diel:all")
@@ -856,7 +859,8 @@ class ViewerScene:
             if l.kind != "dielectric":
                 continue
             P2 = P.copy()
-            P2[:, 2] = l.z0 + (P[:, 2] - z0) / span * (l.z1 - l.z0)
+            e = self._slab_eps(l)          # bakir yuzeyleriyle ayni duzlemde olmasin: saydam levha + bakir z-fighting
+            P2[:, 2] = (l.z0 + e) + (P[:, 2] - z0) / span * (l.z1 - l.z0 - 2 * e)
             self._add_layer_real(l.key, (P2, N, T, G if G is not None else np.zeros(len(P2), np.int32)))
             keys.append(l.key)
         self._slab_keys = keys
