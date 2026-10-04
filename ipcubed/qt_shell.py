@@ -94,7 +94,7 @@ class ViewerShell(QtCore.QObject):
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._context_menu)
         QtGui.QShortcut(QtGui.QKeySequence("3"), self.frame, activated=self.toggle)
-        QtGui.QShortcut(QtGui.QKeySequence("Esc"), self.frame, activated=self.hide3d)
+        QtGui.QShortcut(QtGui.QKeySequence("Esc"), self.frame, activated=self._esc)
         QtGui.QShortcut(QtGui.QKeySequence("2"), self.frame, activated=self.hide3d)
 
         self._closing = False
@@ -156,7 +156,9 @@ class ViewerShell(QtCore.QObject):
         if self.core.travel > 6:
             return
         from .ctxmenu import build_menu
-        menu, A = build_menu(self.canvas, self.settings_win.isVisible(), self.embedded, self._external, self.cfg.show_view_cube, self.cfg.show_stats)
+        c = self.core
+        menu, A = build_menu(self.canvas, self.settings_win.isVisible(), self.embedded, self._external, self.cfg.show_view_cube, self.cfg.show_stats,
+                             hl_active=c.highlight_active(), has_sel=bool(c.hl.selected), can_2d=c.sync is not None)
         a_set, a_ref, a_ext, a_ret, a_2d = A["settings"], A["refresh"], A["external"], A["return"], A["to2d"]
         act = menu.exec(self.canvas.mapToGlobal(pos))
         if act is None:
@@ -174,6 +176,19 @@ class ViewerShell(QtCore.QObject):
         elif act is a_ret:
             self.return_to_kicad()
         elif act is a_2d:
+            self.hide3d()
+        elif act is A["nethl"]:
+            self.core.start_picker()
+        elif act is A["stophl"]:
+            self.core.stop_highlight()
+        elif act is A["hl2d"]:
+            self.core.highlight_2d()
+
+    def _esc(self):
+        """ESC: once net vurgusunu kapat, vurgu yoksa 2D'ye don."""
+        if self.core.highlight_active():
+            self.core.stop_highlight()
+        else:
             self.hide3d()
 
     def _cube_toggled(self, on: bool):

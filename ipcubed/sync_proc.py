@@ -37,6 +37,10 @@ def _sync_main(cmd_q, out_q):
             t.request_full.set()
         elif name == "check":
             t.check_now.set()
+        elif name in ("hl2d", "hlclear"):          # KiCad 2D vurgusu: ayri baglanti, sync thread'ini bekletmez
+            from .kicad_actions import clear_highlight, highlight_nets
+            fn, args = (highlight_nets, (cmd[1],)) if name == "hl2d" else (clear_highlight, ())
+            threading.Thread(target=fn, args=args, daemon=True).start()
         elif name == "stop":
             t.stop()
             break

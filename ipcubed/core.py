@@ -1,4 +1,4 @@
-"""ViewerCore: sahne + kamera + giris + KiCad senkronu. Pencere sistemi (Qt) bilmez."""
+﻿"""ViewerCore: sahne + kamera + giris + KiCad senkronu. Pencere sistemi (Qt) bilmez."""
 from __future__ import annotations
 
 import queue
@@ -43,6 +43,13 @@ class ViewerCore:
         self.renderer.add_event_handler(self._on_event, "pointer_down", "pointer_move", "pointer_up", "pointer_leave", "wheel")
         self._init_cube()
         self._init_stats()
+        from .nethl import NetHighlighter
+        self.hl = NetHighlighter(self.vs)
+        self.picker = False                  # Net Highlighter modu (sag tik menusu)
+        self._pick_pos = None                # bekleyen hover picking konumu
+        self._shift = False
+        self._hl2d = False                   # 2D'de KiCad vurgusu yapildi mi
+        self.renderer.add_event_handler(self._on_key, "key_down", "key_up")
         canvas.request_draw(self._draw)
 
     # ---------------------------------------------------------------- KiCad senkronu
@@ -81,6 +88,7 @@ class ViewerCore:
             self.rig.set_aspect(w / h)
         t0 = time.perf_counter()
         self.renderer.render(self.vs.scene, self.camera, flush=False)
+        self.hl.render(self.renderer, self.camera, w, h)
         self._update_stats(w, h)
         self._draw_cube(w, h)                 # kup + performans yazisi: tek bindirme gecisi
         self._record_frame(t0)
@@ -232,12 +240,24 @@ class ViewerCore:
             self._interacting()
         t = e.type
         w, h = self.canvas.get_logical_size()
+        if t == "pointer_move":
+            self._last_pointer = (e.x, e.y)
         if t == "pointer_leave":
+            if self.hl.hover:
+                self.hl.hover = set()
+                self.request_draw()
             if self.cube.hover is not None:
                 self.cube.hover = None
                 self.request_draw()
             return
+        if t in ("pointer_move", "pointer_down", "pointer_up"):
+            self._shift = "Shift" in tuple(e.modifiers)
         if t == "pointer_move" and not self._drag:
+            if self.picking():
+                self._pick_pos = (e.x, e.y)
+            elif self.hl.hover:
+                self.hl.hover = set()
+                self.request_draw()
             hov = self._cube_hit(e.x, e.y)
             if hov != self.cube.hover:
                 self.cube.hover = hov
@@ -256,6 +276,8 @@ class ViewerCore:
                     self._cube_action(hit)
                 self._cube_press = None
                 return
+            if self._drag and self._drag[0] == 1 and self.travel <= 4 and self.picking():
+                self._pick_click(e.x, e.y, "Shift" in tuple(e.modifiers))
             self._drag = None
         elif t == "pointer_move" and self._drag:
             btn, lx, ly, mods = self._drag
@@ -277,6 +299,100 @@ class ViewerCore:
             nx = (e.x / max(w, 1)) * 2 - 1
             ny = 1 - (e.y / max(h, 1)) * 2
             self.rig.zoom(0.88 if e.dy < 0 else 1 / 0.88, nx, ny)
+
+    # ---------------------------------------------------------------- Net Highlighter
+    def picking(self) -> bool:
+        """Fare altindaki net yanip soner mi: menuden acilan mod ya da secim varken Shift basili."""
+        return self.picker or (bool(self.hl.selected) and self._shift)
+
+    def start_picker(self):
+        self.picker = True
+        self._pick_pos = self._last_pointer
+        self.request_draw()
+
+    def stop_highlight(self):
+        self.picker = False
+        self.hl.clear()
+        self._pick_pos = None
+        if self._hl2d:
+            self.clear_2d()
+        self.request_draw()
+
+    def highlight_active(self) -> bool:
+        return self.picker or bool(self.hl.selected)
+
+    def net_names(self) -> list:
+        snap = self.vs._snap
+        return list(getattr(getattr(snap, "copper", None), "net_names", None) or [])
+
+    def with_pair(self, nid: int) -> set:
+        """Diff pair ise esi de (KiCad kurali: ad sonu +/- ya da P/N)."""
+        names = self.net_names()
+        out = {nid}
+        if not (0 < nid < len(names)):
+            return out
+        from .nethl import pair_name
+        other = pair_name(names[nid])
+        if other:
+            try:
+                out.add(names.index(other))
+            except ValueError:
+                pass
+        return out
+
+    def _pick_net(self, x, y):
+        try:
+            info = self.renderer.get_pick_info((x, y))
+        except Exception:  # noqa: BLE001
+            return None
+        return self.hl.net_at(info)
+
+    def _pick_click(self, x, y, shift: bool):
+        nid = self._pick_net(x, y)
+        if nid is None:
+            return
+        nets = self.with_pair(nid)
+        if shift:
+            if nets <= self.hl.selected:
+                self.hl.selected = self.hl.selected - nets
+            else:
+                self.hl.selected = self.hl.selected | nets
+        else:
+            self.hl.selected = set(nets)
+            self.picker = False
+            self.hl.hover = set()
+        if not self.hl.selected and not self.picker:
+            self.stop_highlight()
+        self.request_draw()
+
+    def _on_key(self, e):
+        if e.key == "Shift":
+            self._shift = e.type == "key_down"
+            if self._shift and self.picking():
+                self._pick_pos = self._last_pointer
+            elif not self.picking() and self.hl.hover:
+                self.hl.hover = set()
+            self.request_draw()
+
+    def select_nets(self, nets):
+        """Test/kontrol: netleri dogrudan sec (diff pair esi dahil)."""
+        sel = set()
+        for n in nets:
+            sel |= self.with_pair(int(n))
+        self.hl.selected = sel
+        self.request_draw()
+
+    def highlight_2d(self):
+        names = self.net_names()
+        sel = [names[n] for n in sorted(self.hl.selected) if 0 < n < len(names)]
+        if sel and self.sync is not None:
+            self.sync._send(("hl2d", sel))
+            self._hl2d = True
+
+    def clear_2d(self):
+        if self.sync is not None:
+            self.sync._send(("hlclear",))
+        self._hl2d = False
 
     # ---------------------------------------------------------------- mod gecisi
     def enter_3d(self, animate: bool = True):
@@ -341,6 +457,16 @@ class ViewerCore:
         if self.rig.tick():
             dirty = True
             self._interacting()
+        if self._pick_pos is not None:
+            pos, self._pick_pos = self._pick_pos, None
+            if self.picking() and self.visible:
+                nid = self._pick_net(*pos)
+                hov = self.with_pair(nid) if nid is not None else set()
+                if hov != self.hl.hover:
+                    self.hl.hover = hov
+                    dirty = True
+        if self.hl.pulsing() and self.visible:
+            dirty = True                                   # yanip sonme: surekli ciz
         if self._quality_scale is not None and self.renderer.pixel_scale != self._quality_scale \
                 and time.perf_counter() - self._interact_t > 0.25:
             self.renderer.pixel_scale = self._quality_scale     # durdu: tam kalite (SSAA) ile bir kez daha ciz

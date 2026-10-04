@@ -30,6 +30,12 @@ def _solid(mat):
     return mat
 
 
+def _pick(mat):
+    """Bakir: fare altindaki ucgen GPU'dan okunabilsin (Net Highlighter)."""
+    mat.pick_write = True
+    return mat
+
+
 def _natural(s: str):
     import re
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
@@ -179,9 +185,9 @@ class ViewerScene:
         c = self.cfg
         k = self._kind(key)
         if k == "cu":
-            return _solid(gfx.MeshStandardMaterial(color=c.copper_color, roughness=0.36, metalness=0.9, env_map_intensity=2.0, side="both"))
+            return _pick(_solid(gfx.MeshStandardMaterial(color=c.copper_color, roughness=0.36, metalness=0.9, env_map_intensity=2.0, side="both")))
         if k == "finish" or k == "barrel":      # plated delik ici (varil) = yuzey kaplama ile ayni renk/malzeme
-            return _solid(gfx.MeshStandardMaterial(color=self.finish_color(), roughness=0.28, metalness=0.55, env_map_intensity=3.2, side="both"))
+            return _pick(_solid(gfx.MeshStandardMaterial(color=self.finish_color(), roughness=0.28, metalness=0.55, env_map_intensity=3.2, side="both")))
         if k == "drill":
             return gfx.MeshBasicMaterial(color=DRILL_COLOR, side="both")
         if k == "diel":
@@ -1082,6 +1088,7 @@ class ViewerScene:
             m = gfx.Mesh(gfx.Geometry(positions=P, normals=N, indices=T2), self._make_material(key))
             self.root.add(m)
             self.layer_meshes[key + ":dyn"] = m
+            self.layer_tags[key + ":dyn"] = G2
         self.apply_settings()
 
     def close(self):
