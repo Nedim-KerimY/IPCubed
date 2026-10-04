@@ -282,6 +282,14 @@ class ViewerScene:
             if k == "cu":
                 mat.color = c.copper_color
                 mat.env_map_intensity = 2.0 * c.env_intensity
+                if key.startswith("cuz:"):                      # pour'lar: exploded view'da saydamlik kaydiricisi; Highlight Polygons kapaliysa secilemez
+                    po = c.polygon_opacity if self._ex else 1.0
+                    mat.opacity = po
+                    want = "solid" if po >= 0.999 else "blend"
+                    if getattr(mat, "alpha_mode", None) != want:
+                        mat.alpha_mode = want
+                    if mat.pick_write != bool(c.highlight_polygons):
+                        mat.pick_write = bool(c.highlight_polygons)
             elif k == "finish" or k == "barrel":
                 mat.color = self.finish_color()
                 mat.env_map_intensity = 3.2 * c.env_intensity

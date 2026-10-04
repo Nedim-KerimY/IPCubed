@@ -53,6 +53,8 @@ class Settings:
     mask_density: float = 0.90
     mask_haze: float = 0.30
     substrate_opacity: float = 0.9
+    polygon_opacity: float = 1.0             # exploded view: zone/pour opakligi (sag tik kaydirici)
+    highlight_polygons: bool = True          # Net Highlighter: pour'lar da vurgulansin / secilebilsin
     settings_rev: int = 1                    # kayitli ayar gocleri (load)
     # maske
     mask_expansion: float | None = None      # None: kartin ayari

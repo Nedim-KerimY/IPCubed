@@ -78,7 +78,10 @@ class NetHighlighter:
     # ------------------------------------------------------------------ geometri
     def _copper_keys(self):
         vs = self.vs
+        polys = vs.cfg.highlight_polygons
         for key, m in vs.layer_meshes.items():
+            if key.startswith("cuz:") and not polys:
+                continue                                   # Highlight Polygons: False -> pour'lar vurgulanmaz / secilmez
             if vs._kind(key) in ("cu", "finish", "barrel") and vs.layer_tags.get(key) is not None:
                 yield key, m
 

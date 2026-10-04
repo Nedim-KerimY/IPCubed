@@ -160,7 +160,9 @@ class ViewerShell(QtCore.QObject):
         c = self.core
         menu, A = build_menu(self.canvas, self.settings_win.isVisible(), self.embedded, self._external, self.cfg.show_view_cube, self.cfg.show_stats,
                              hl_active=c.highlight_active(), has_sel=bool(c.hl.selected), can_2d=c.sync is not None,
-                             exploded=c.exploded, show_diel=not c.vs.ex_hide_diel)
+                             exploded=c.exploded, show_diel=not c.vs.ex_hide_diel,
+                             poly_opacity=self.cfg.polygon_opacity, on_poly=self._set_poly_opacity,
+                             hl_polygons=self.cfg.highlight_polygons)
         a_set, a_ref, a_ext, a_ret, a_2d = A["settings"], A["refresh"], A["external"], A["return"], A["to2d"]
         act = menu.exec(self.canvas.mapToGlobal(pos))
         if act is None:
@@ -181,6 +183,11 @@ class ViewerShell(QtCore.QObject):
             self.hide3d()
         elif act is A["explode"]:
             self.core.toggle_explode()
+        elif act is A["hlpoly"]:
+            self.cfg.highlight_polygons = not self.cfg.highlight_polygons
+            self.core.vs.apply_settings()
+            self.core.request_draw()
+            self._schedule_save()
         elif act is A["diel"]:
             self.core.vs.ex_hide_diel = not self.core.vs.ex_hide_diel
             self.core.vs.apply_settings()
@@ -198,6 +205,13 @@ class ViewerShell(QtCore.QObject):
             self.core.stop_highlight()
         else:
             self.hide3d()
+
+    def _set_poly_opacity(self, v: float):
+        """Exploded view: zone/pour opakligi (menudeki kaydirici, canli)."""
+        self.cfg.polygon_opacity = float(v)
+        self.core.vs.apply_settings()
+        self.core.request_draw()
+        self._schedule_save()
 
     def _layers_changed(self, key: str):
         """Gizmo'nun kucuk kupuyle katman ac/kapat: paneldeki onay kutusu da guncellensin."""
