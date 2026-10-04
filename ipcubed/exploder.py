@@ -13,8 +13,8 @@ from __future__ import annotations
 import numpy as np
 import pygfx as gfx
 
-BLUE = "#0000ff"
-BLUE_HOVER = "#4d5cff"
+from .nethl import HOVER_COLOR as BLUE        # Net Highlighter mavisiyle ayni
+BLUE_HOVER = "#8cc0ff"
 GREEN = "#00ff00"
 RED = "#ff0000"
 OPACITY = 0.82                  # hafif saydam: arkasindaki kart gorunur
@@ -34,7 +34,8 @@ def _tone(normals: np.ndarray) -> np.ndarray:
 def _paint(mesh: gfx.Mesh, color: str):
     geo = mesh.geometry
     col = np.ones((len(geo.positions.data), 4), np.float32)
-    col[:, :3] = _tone(geo.normals.data)[:, None] * _rgb(color)[None]
+    c = _tone(geo.normals.data)[:, None] * _rgb(color)[None]           # sRGB (malzeme rengi gibi)
+    col[:, :3] = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)   # vertex rengi lineer yorumlanir
     if getattr(geo, "colors", None) is None:
         geo.colors = gfx.Buffer(col)
     else:
