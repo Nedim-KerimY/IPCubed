@@ -50,6 +50,7 @@ class ViewerCore:
         self._shift = False
         self._hl2d = False                   # 2D'de KiCad vurgusu yapildi mi
         self.renderer.add_event_handler(self._on_key, "key_down", "key_up")
+        self._init_explode()
         canvas.request_draw(self._draw)
 
     # ---------------------------------------------------------------- KiCad senkronu
@@ -90,6 +91,7 @@ class ViewerCore:
         self.renderer.render(self.vs.scene, self.camera, flush=False)
         self.hl.render(self.renderer, self.camera, w, h)
         self._update_stats(w, h)
+        self._update_ex_label(w, h)
         self._draw_cube(w, h)                 # kup + performans yazisi: tek bindirme gecisi
         self._record_frame(t0)
 
@@ -262,6 +264,8 @@ class ViewerCore:
             if hov != self.cube.hover:
                 self.cube.hover = hov
                 self.request_draw()
+        if self._ex_event(e):
+            return
         if t == "pointer_down":
             hit = self._cube_hit(e.x, e.y) if e.button == 1 else None
             if hit is not None:
@@ -394,6 +398,235 @@ class ViewerCore:
             self.sync._send(("hlclear",))
         self._hl2d = False
 
+    # ---------------------------------------------------------------- Exploded board view
+    EX_MS = 600
+
+    def _init_explode(self):
+        import numpy as np
+        from .exploder import ExploderGizmo
+        self.ex = ExploderGizmo()
+        self.ex.group.visible = False
+        self.vs.scene.add(self.ex.group)
+        self.exploded = False
+        self._ex_t = 0.0                     # 0 = normal, 1 = tam patlatilmis (animasyon)
+        self._ex_anim = None                 # (baslangic zamani, baslangic t, hedef t)
+        self._ex_off = None                  # bakir katmani basina (ustten alta) hedef ek z (mm); en alt = 0
+        self._ex_sig = None                  # gizmo hangi stackup/karta gore kuruldu
+        self._ex_flags = None
+        self._ex_drag = None
+        self._ex_hover_pos = None
+        self._ex_dirty = False
+        self.on_layers_changed = lambda key: None
+        self._ex_label_key = None
+        self._ex_label_tex = gfx.Texture(np.zeros((4, 4, 4), np.uint8), dim=2)
+        mat = gfx.MeshBasicMaterial(map=self._ex_label_tex)
+        mat.alpha_mode = "blend"
+        self._ex_label = gfx.Mesh(gfx.plane_geometry(1, 1), mat)
+        self._ex_label.visible = False
+        self._cube_scene.add(self._ex_label)
+
+    def _ex_layers(self):
+        st = self.vs.stack
+        return st.copper() if st is not None else []
+
+    def toggle_explode(self, on=None):
+        import math
+        import numpy as np
+        on = (not self.exploded) if on is None else bool(on)
+        cu = self._ex_layers()
+        if not cu or not self.vs.board_bounds:
+            return
+        n = len(cu)
+        if on and (self._ex_off is None or len(self._ex_off) != n):
+            b = self.vs.board_bounds
+            gap = min(8.0, max(2.0, math.hypot(b[2] - b[0], b[3] - b[1]) * 0.025))
+            self._ex_off = np.array([(n - 1 - i) * gap for i in range(n)], float)
+        self.exploded = on
+        self._ex_anim = (time.perf_counter(), self._ex_t, 1.0 if on else 0.0)
+        self.request_draw()
+
+    def _ex_build(self):
+        """Gizmo: kartin sag alt kosesinde, her bakir katman icin bir kup (stackup / kart degisince yeniden)."""
+        import math
+        cu = self._ex_layers()
+        b = self.vs.board_bounds
+        sig = (tuple(l.layer_id for l in cu), tuple(round(v, 3) for v in b) if b else None)
+        if sig == self._ex_sig or not cu or not b:
+            return
+        self._ex_sig = sig
+        self.ex.build([(l.key, l.name, self.cfg.visible(l.key)) for l in cu], (0.0, 0.0), math.hypot(b[2] - b[0], b[3] - b[1]))
+        s = self.ex.size
+        self.ex.corner = (b[2] + 1.6 * s, b[1] + 1.6 * s)          # sag alt kosenin hemen disi
+        self._ex_flags = None
+        if self._ex_off is not None and len(self._ex_off) != len(cu):
+            self._ex_off = None
+            self.exploded = False
+            self._ex_t = 0.0
+
+    def _ex_current(self):
+        """Uygulanan ofsetler (animasyon egrisiyle)."""
+        u = self._ex_t
+        e = u * u * (3 - 2 * u)
+        return self._ex_off * e if self._ex_off is not None else None
+
+    def _ex_apply(self):
+        cu = self._ex_layers()
+        off = self._ex_current()
+        if off is None or not cu:
+            self.vs.set_explode(None)
+            self.ex.group.visible = False
+            return
+        on = self._ex_t > 1e-4
+        self.vs.set_explode({l.layer_id: float(off[i]) for i, l in enumerate(cu)} if on else None)
+        self.ex.place([(l.z0 + l.z1) / 2 + float(off[i]) for i, l in enumerate(cu)])
+        self.ex.group.visible = on
+
+    def _ex_tick(self) -> bool:
+        if self.vs.stack is None:
+            return False
+        dirty = False
+        if self._ex_sig is None or self.exploded or self._ex_t > 0:
+            before = self._ex_sig
+            self._ex_build()
+            if self._ex_sig != before:
+                self._ex_dirty = True
+        if self._ex_anim is not None:
+            t0, a, b = self._ex_anim
+            u = min(1.0, (time.perf_counter() - t0) * 1000.0 / self.EX_MS)
+            self._ex_t = a + (b - a) * u
+            if u >= 1.0:
+                self._ex_anim = None
+            self._ex_dirty = True
+            self._interacting()
+        if self._ex_dirty:
+            self._ex_dirty = False
+            self._ex_apply()
+            dirty = True
+        if self.ex.group.visible:
+            flags = [self.cfg.visible(l.key) for l in self._ex_layers()]
+            if flags != self._ex_flags:
+                self._ex_flags = flags
+                self.ex.set_visible_flags(flags)
+                dirty = True
+            if self._ex_hover_pos is not None and self._ex_drag is None:
+                pos, self._ex_hover_pos = self._ex_hover_pos, None
+                if self.ex.set_hover(self._ex_pick(*pos)):
+                    dirty = True
+        elif self.ex.hover is not None:
+            self.ex.set_hover(None)
+        return dirty
+
+    def _ex_pick(self, x, y):
+        try:
+            info = self.renderer.get_pick_info((x, y))
+        except Exception:  # noqa: BLE001
+            return None
+        return self.ex.hit_object(info.get("world_object"))
+
+    def _to_screen(self, p):
+        import numpy as np
+        w, h = self.canvas.get_logical_size()
+        v = self.camera.camera_matrix @ np.array([p[0], p[1], p[2], 1.0])
+        if abs(v[3]) < 1e-9:
+            return None
+        n = v[:3] / v[3]
+        return np.array([(n[0] + 1) / 2 * w, (1 - n[1]) / 2 * h])
+
+    def _ex_event(self, e) -> bool:
+        """Gizmo surukleme / tik. True: olay gizmoya ait (kamera hareket etmez)."""
+        import numpy as np
+        t = e.type
+        if not self.ex.group.visible and self._ex_drag is None:
+            return False
+        if t == "pointer_move" and self._ex_drag is None:
+            self._ex_hover_pos = (e.x, e.y)
+            return False
+        if t == "pointer_down" and e.button == 1:
+            hit = self._ex_pick(e.x, e.y)
+            if hit is None:
+                return False
+            self._ex_drag = {"hit": hit, "x": e.x, "y": e.y, "start": self._ex_off.copy(), "moved": False}
+            self.ex.press = hit
+            return True
+        d = self._ex_drag
+        if d is None:
+            return False
+        if t == "pointer_move":
+            dx, dy = e.x - d["x"], e.y - d["y"]
+            if abs(dx) + abs(dy) > 3:
+                d["moved"] = True
+            if not d["moved"]:
+                return True
+            cu = self._ex_layers()
+            i = d["hit"][1]
+            n = len(cu)
+            z = (cu[i].z0 + cu[i].z1) / 2 + float(self._ex_current()[i])
+            c = self.ex.corner
+            s0, s1 = self._to_screen((c[0], c[1], z)), self._to_screen((c[0], c[1], z + 1.0))
+            if s0 is None or s1 is None:
+                return True
+            a = s1 - s0                                   # 1 mm yukari = ekranda a piksel
+            dz = float(np.dot((dx, dy), a) / max(np.dot(a, a), 1e-9))
+            start = d["start"]
+            off = start.copy()
+            if "Shift" in tuple(e.modifiers):             # tum araliklar esit
+                ref = i if i < n - 1 else 0
+                g = max(0.0, (start[ref] + dz) / (n - 1 - ref)) if n > 1 else 0.0
+                off = np.array([(n - 1 - j) * g for j in range(n)], float)
+            elif i < n - 1:                               # en alt (B.Cu) sabit; katmanlar birbirinin icinden gecmez
+                hi = off[i - 1] if i > 0 else np.inf
+                off[i] = float(np.clip(start[i] + dz, off[i + 1], hi))
+            self._ex_off = off
+            self._ex_t = 1.0
+            self._ex_anim = None
+            self._ex_dirty = True
+            self._interacting()
+            return True
+        if t == "pointer_up":
+            self._ex_drag = None
+            self.ex.press = None
+            if not d["moved"] and d["hit"][0] == "small":
+                cu = self._ex_layers()
+                key = cu[d["hit"][1]].key
+                self.cfg.layer_visible[key] = not self.cfg.visible(key)
+                self.vs.apply_settings()
+                self.on_layers_changed(key)
+            self.request_draw()
+            return True
+        return False
+
+    def _update_ex_label(self, w, h):
+        """Fare altindaki katman kupunun adi (kupun solunda, ekran koordinatli)."""
+        hov = self.ex.hover if self.ex.group.visible else None
+        cu = self._ex_layers()
+        if hov is None or hov[1] >= len(cu):
+            self._ex_label.visible = False
+            return
+        i = hov[1]
+        try:
+            ratio = float(self.canvas.get_pixel_ratio())
+        except Exception:  # noqa: BLE001
+            ratio = 1.0
+        key = (cu[i].name, ratio)
+        if key != self._ex_label_key:
+            from .exploder import label_image
+            self._ex_label_key = key
+            arr = label_image(cu[i].name, ratio)
+            self._ex_label_tex = gfx.Texture(arr, dim=2)
+            self._ex_label.material.map = self._ex_label_tex
+            self._ex_label_size = (arr.shape[1] / ratio, arr.shape[0] / ratio)
+        off = self._ex_current()
+        c = self.ex.corner
+        p = self._to_screen((c[0], c[1], (cu[i].z0 + cu[i].z1) / 2 + float(off[i])))
+        if p is None:
+            self._ex_label.visible = False
+            return
+        lw, lh = self._ex_label_size
+        x = p[0] - 22 - lw / 2
+        self._ex_label.local.scale = (lw, lh, 1)
+        self._ex_label.local.position = (x, h - p[1], 0)
+        self._ex_label.visible = True
+
     # ---------------------------------------------------------------- mod gecisi
     def enter_3d(self, animate: bool = True):
         self.visible = True
@@ -465,6 +698,8 @@ class ViewerCore:
                 if hov != self.hl.hover:
                     self.hl.hover = hov
                     dirty = True
+        if self._ex_tick():
+            dirty = True
         if self.hl.pulsing() and self.visible:
             dirty = True                                   # yanip sonme: surekli ciz
         if self._quality_scale is not None and self.renderer.pixel_scale != self._quality_scale \

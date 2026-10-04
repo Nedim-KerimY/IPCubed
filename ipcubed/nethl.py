@@ -1,4 +1,4 @@
-﻿"""Net Highlighter: fare altindaki net mavi yanip soner; secilen net(ler) normal isikla one cikar, kartin kalani kararir.
+"""Net Highlighter: fare altindaki net mavi yanip soner; secilen net(ler) normal isikla one cikar, kartin kalani kararir.
 
 Geometri yeniden uretilmez: bakir mesh'lerinin vertex etiketlerinde (alt 16 bit = net) net zaten var. Her bakir mesh'inden
 o netin ucgenleri ayiklanir ve AYNI vertex tamponlarini paylasan kucuk mesh'ler yapilir (birkac ms).
@@ -181,6 +181,11 @@ class NetHighlighter:
         if not self.active:
             return
         self.sync()
+        for grp in (self._sel_group, self._hov_group):               # exploded view: kaynak katmanla ayni kayma
+            for ch in grp.children:
+                src = self.vs.layer_meshes.get(self._owner.get(id(ch)))
+                if src is not None:
+                    ch.local.position = src.local.position
         if self.selected:
             self._dim.local.scale = (w, h, 1)
             self._dim.local.position = (w / 2, h / 2, 0)

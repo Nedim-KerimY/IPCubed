@@ -65,6 +65,31 @@ def _depth(geo) -> gfx.Mesh:
     return mesh
 
 
+def label_image(text: str, ratio: float = 1.0):
+    """Katman adi etiketi (koyu yuvarlak kutu, acik yazi) -> RGBA (ekran piksel yogunlugunda)."""
+    from PySide6 import QtCore, QtGui
+    from . import theme
+    f = theme.make_font(12)
+    f.setBold(True)
+    fm = QtGui.QFontMetricsF(f)
+    w, h = fm.horizontalAdvance(text) + 14, 22
+    img = QtGui.QImage(int(w * ratio), int(h * ratio), QtGui.QImage.Format_RGBA8888)
+    img.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(img)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    p.setRenderHint(QtGui.QPainter.TextAntialiasing)
+    p.scale(ratio, ratio)
+    p.setPen(QtCore.Qt.NoPen)
+    p.setBrush(QtGui.QColor(20, 20, 20, 225))
+    p.drawRoundedRect(QtCore.QRectF(0, 0, w, h), 5, 5)
+    p.setFont(f)
+    p.setPen(QtGui.QColor("#e8eaed"))
+    p.drawText(QtCore.QRectF(0, 0, w, h), QtCore.Qt.AlignCenter, text)
+    p.end()
+    arr = np.frombuffer(img.constBits(), np.uint8).reshape(img.height(), img.width(), 4).copy()
+    return arr
+
+
 class ExploderGizmo:
     """layers: [(anahtar, ad, gorunur)] ustten alta. Boyutlar karta gore olceklenir."""
 
@@ -77,6 +102,7 @@ class ExploderGizmo:
         self.rail = None
         self.layers: list = []
         self.hover = None                    # ('big'|'small', i)
+        self.press = None
         self.size = 2.0                      # buyuk kup kenari (mm)
 
     def _add(self, geo, color):

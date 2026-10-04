@@ -60,6 +60,7 @@ class ViewerShell(QtCore.QObject):
         self.core.on_status = self.settings_win.set_status
         self.core.on_snapshot = self._on_snapshot
         self.core.on_cube_toggled = self._cube_toggled
+        self.core.on_layers_changed = self._layers_changed
         self.settings_win.on_close = self.close_settings
         self.settings_win.hide()
         self.frame = ViewerFrame()                 # [3D Ayarlari paneli | viewport]
@@ -158,7 +159,8 @@ class ViewerShell(QtCore.QObject):
         from .ctxmenu import build_menu
         c = self.core
         menu, A = build_menu(self.canvas, self.settings_win.isVisible(), self.embedded, self._external, self.cfg.show_view_cube, self.cfg.show_stats,
-                             hl_active=c.highlight_active(), has_sel=bool(c.hl.selected), can_2d=c.sync is not None)
+                             hl_active=c.highlight_active(), has_sel=bool(c.hl.selected), can_2d=c.sync is not None,
+                             exploded=c.exploded)
         a_set, a_ref, a_ext, a_ret, a_2d = A["settings"], A["refresh"], A["external"], A["return"], A["to2d"]
         act = menu.exec(self.canvas.mapToGlobal(pos))
         if act is None:
@@ -177,6 +179,8 @@ class ViewerShell(QtCore.QObject):
             self.return_to_kicad()
         elif act is a_2d:
             self.hide3d()
+        elif act is A["explode"]:
+            self.core.toggle_explode()
         elif act is A["nethl"]:
             self.core.start_picker()
         elif act is A["stophl"]:
@@ -190,6 +194,13 @@ class ViewerShell(QtCore.QObject):
             self.core.stop_highlight()
         else:
             self.hide3d()
+
+    def _layers_changed(self, key: str):
+        """Gizmo'nun kucuk kupuyle katman ac/kapat: paneldeki onay kutusu da guncellensin."""
+        cb = self.settings_win._layer_checks.get(key)
+        if cb is not None:
+            cb.blockSignals(True); cb.setChecked(self.cfg.visible(key)); cb.blockSignals(False)
+        self._schedule_save()
 
     def _cube_toggled(self, on: bool):
         cb = self.settings_win.cube_check

@@ -52,7 +52,8 @@ class Settings:
     # lehim maskesi gorunumu: yogunluk = renk filtresi (altindaki bakiri yesile boyar), pus = parlak yesil katki
     mask_density: float = 0.90
     mask_haze: float = 0.30
-    substrate_opacity: float = 1.0
+    substrate_opacity: float = 0.9
+    settings_rev: int = 1                    # kayitli ayar gocleri (load)
     # maske
     mask_expansion: float | None = None      # None: kartin ayari
     tent_vias: bool | None = None            # None: via basina KiCad ayari; True: hepsi maskeyle kapali; False: hepsi acik
@@ -125,6 +126,10 @@ class Settings:
             for k, old in (("substrate_color", {"#1d4a2c", "#1a2a1f", "#2a6b40", "#14301f"}), ("edge_color", {"#b09a55", "#9c8b4f"})):
                 if getattr(s, k) in old:
                     setattr(s, k, getattr(cls(), k))
+            if s.settings_rev < 1:                     # rev 1: varsayilan dielektrik opakligi 1.0 -> 0.9 (bir kez)
+                if abs(s.substrate_opacity - 1.0) < 1e-9:
+                    s.substrate_opacity = 0.9
+                s.settings_rev = 1
         except Exception:
             pass
         return s

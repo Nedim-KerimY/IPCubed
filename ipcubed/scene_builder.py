@@ -158,6 +158,8 @@ class ViewerScene:
         self._fast_idle = None
         self._warm_key = None
         self._warm_futs: list = []
+        self._ex: dict = {}                              # exploded view: bakir layer_id -> ek z (mm); bos = normal
+        self._tube_base: dict = {}                       # tup mesh'leri: (pozisyon tamponu, ozgun z, son ofset imzasi)
         self.keep_pool = False                           # 3D acikken is havuzu uzun sure acik kalir (anlik maske guncellemesi)
         self._pad_clip = None
         self._inner: dict[int, str] = {}                 # ic bakir katmani -> 'pending' | 'done' (yalniz GORUNUR olanlar uretilir)
@@ -281,8 +283,9 @@ class ViewerScene:
                 mat.color = self.finish_color()
                 mat.env_map_intensity = 3.2 * c.env_intensity
             elif k == "diel":
-                mat.opacity = c.substrate_opacity
-                want = "solid" if c.substrate_opacity >= 0.999 else "blend"
+                op = c.substrate_opacity * (0.5 if self._ex else 1.0)    # exploded view: dielektrik ayarin yarisi kadar opak
+                mat.opacity = op
+                want = "solid" if op >= 0.999 else "blend"
                 if getattr(mat, "alpha_mode", None) != want:
                     mat.alpha_mode = want
                 ckey = (c.substrate_color, c.edge_color)
@@ -314,6 +317,95 @@ class ViewerScene:
                     m.geometry.colors.data[:] = col
                     m.geometry.colors.update_full()
         self._ensure_inner()
+        if self._ex or self._tube_base:
+            self._apply_explode()
+
+    # ------------------------------------------------------------------ exploded view
+    def set_explode(self, offs: dict | None):
+        """offs: bakir layer_id -> ek z (mm), None/bos = normal gorunum. Geometri yeniden uretilmez: katman mesh'leri kaydirilir,
+        via/pad tupleri (katmanlar arasi) z'de esnetilir, dielektrik levhalari iki bakirin arasini dolduracak sekilde z'de olceklenir."""
+        was = bool(self._ex)
+        self._ex = {k: float(v) for k, v in (offs or {}).items() if abs(v) > 1e-6}
+        if bool(self._ex) != was:
+            self.apply_settings()                  # tek govde <-> katman levhalari; apply_settings kaydirmayi da uygular
+        else:
+            self._apply_explode()
+
+    def _ex_maps(self):
+        cu = self.stack.copper()
+        slab, above, pending = {}, None, []
+        for l in self.stack.layers:                # ustten alta: her dielektrik, ustundeki ve altindaki bakirin arasini doldurur
+            if l.kind == "copper":
+                for d in pending:
+                    slab[d.key] = (d, above, l)
+                pending = []
+                above = l
+            elif l.kind == "dielectric":
+                pending.append(l)
+        return cu[0].layer_id, cu[-1].layer_id, slab
+
+    def _ex_dz(self, key: str, maps) -> float:
+        top, bot, slab = maps
+        p = key.split(":")
+        k = p[0]
+        if len(p) > 1 and p[1].isdigit():
+            if k in ("cu", "cut", "cuz", "via"):
+                return self._ex.get(int(p[1]), 0.0)
+        if len(p) > 1 and p[1] in ("top", "bottom"):
+            return self._ex.get(top if p[1] == "top" else bot, 0.0)
+        return 0.0
+
+    def _apply_explode(self):
+        if self.stack is None or not self.stack.copper():
+            return
+        maps = self._ex_maps()
+        cu = self.stack.copper()
+        zc = np.array([(l.z0 + l.z1) / 2 for l in cu])[::-1]                 # artan z
+        oc = np.array([self._ex.get(l.layer_id, 0.0) for l in cu])[::-1]
+        sig = tuple(np.round(oc, 5))
+        for key, m in self.layer_meshes.items():
+            if key.split(":")[0] in ("viab", "viabc", "barrel"):
+                self._remap_tube(key, m, zc, oc, sig)
+                continue
+            ent = maps[2].get(key)
+            if ent is not None and ent[1] is not None and ent[2] is not None:
+                # dielektrik levha: ustteki bakirin altindan alttaki bakirin ustune kadar ESNER (z olcegi; geometri ayni)
+                d, up, lo = ent
+                top = up.z0 + self._ex.get(up.layer_id, 0.0)
+                bot = lo.z1 + self._ex.get(lo.layer_id, 0.0)
+                sz = max(top - bot, 1e-6) / max(d.z1 - d.z0, 1e-9)
+                m.local.scale = (1.0, 1.0, sz)
+                m.local.position = (0.0, 0.0, bot - d.z0 * sz)
+                continue
+            pos = (0.0, 0.0, self._ex_dz(key, maps))
+            m.local.position = pos
+            for x in self.mask_haze.get(key, ()):
+                x.local.position = pos
+        top, bot, _ = maps
+        for g in self.groups.values():
+            pos = (0.0, 0.0, self._ex.get(bot if g.bottom else top, 0.0))
+            for m in g.meshes:
+                m.local.position = pos
+        for key in [k for k in self._tube_base if k not in self.layer_meshes]:
+            del self._tube_base[key]
+
+    def _remap_tube(self, key, m, zc, oc, sig):
+        """Tup: her vertex'in z'si, iki komsu bakir katmaninin ofsetleri arasinda dogrusal kaydirilir (tup esner)."""
+        buf = m.geometry.positions
+        ent = self._tube_base.get(key)
+        if ent is None or ent[0] is not buf:
+            if not self._ex:
+                return
+            ent = (buf, buf.data[:, 2].copy(), None)
+        if ent[2] == sig:
+            return
+        z0 = ent[1]
+        buf.data[:, 2] = z0 + np.interp(z0, zc, oc) if self._ex else z0
+        buf.update_full()
+        if self._ex:
+            self._tube_base[key] = (buf, z0, sig)
+        else:
+            self._tube_base.pop(key, None)
 
     def layer_keys(self) -> list[str]:
         return list(self.layer_meshes)
@@ -731,7 +823,7 @@ class ViewerScene:
     def _diel_merged(self) -> bool:
         c = self.cfg
         ds = [l.key for l in self.stack.layers if l.kind == "dielectric"] if self.stack is not None else []
-        return all(c.visible(d) for d in ds) and c.substrate_opacity >= 0.999
+        return all(c.visible(d) for d in ds) and c.substrate_opacity >= 0.999 and not self._ex
 
     def _drop_slabs(self):
         for k in list(getattr(self, "_slab_keys", ())):
