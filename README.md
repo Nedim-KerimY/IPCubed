@@ -1,10 +1,12 @@
-# IPCubed
+# IPCubed (BETA VERSION, USE AT YOUR OWN RISK, MAY HARM BOARD PRODUCTION FILES)
 
 **KiCad modern 3D viewer plugin using KiCad IPC API.**
 
 IPCubed reads the open board over the KiCad IPC API (KiCad 10+) and shows a live, full-stackup 3D view
 (copper, dielectric, solder mask, silkscreen, STEP/WRL models, ViewCube). Core logic is cross-platform;
 only the "overlay on top of the KiCad window" part is OS specific (`embed.py` for Windows, `embed_x11.py` for Linux/X11).
+
+[![IPCubed — Altium-Style High Quality 3D Mode in KiCad](https://img.youtube.com/vi/FmNPxe1aHF4/maxresdefault.jpg)](https://www.youtube.com/watch?v=FmNPxe1aHF4)
 
 ## Install
 
