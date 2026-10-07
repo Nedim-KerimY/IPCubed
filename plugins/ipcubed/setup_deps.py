@@ -265,6 +265,13 @@ def _kicad_running() -> bool:
         import psutil                      # bilesenlerle birlikte kuruldu
     except ImportError:
         return True
+    from .ctl import kicad_pid
+    pid = kicad_pid()
+    if pid is not None:
+        try:
+            return psutil.Process(pid).is_running() and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.Error:
+            return False
     for p in psutil.process_iter(["name"]):
         n = (p.info["name"] or "").lower()
         if (n.startswith("kicad") or n.startswith("pcbnew")) and "cli" not in n:

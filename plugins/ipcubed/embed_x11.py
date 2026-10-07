@@ -16,6 +16,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 class X11Embedder:
     MIN_CANVAS = (300, 200)
+    owner_pid = None
 
     def __init__(self):
         from Xlib import X, XK, display
@@ -25,6 +26,7 @@ class X11Embedder:
         a = self.d.intern_atom
         self.A_CLIENT_LIST, self.A_ACTIVE = a("_NET_CLIENT_LIST"), a("_NET_ACTIVE_WINDOW")
         self.A_NAME, self.A_UTF8 = a("_NET_WM_NAME"), a("UTF8_STRING")
+        self.A_PID = a("_NET_WM_PID")
         self.kc3 = self.d.keysym_to_keycode(XK.XK_3)
         self.mod_kcs = [self.d.keysym_to_keycode(getattr(XK, n)) for n in
                         ("XK_Shift_L", "XK_Shift_R", "XK_Control_L", "XK_Control_R", "XK_Alt_L", "XK_Alt_R", "XK_Super_L", "XK_Super_R")]
@@ -56,6 +58,10 @@ class X11Embedder:
         if g is None or c is None:
             return None
         return (-c.x, -c.y, g.width, g.height)
+
+    def _pid(self, win):
+        p = self._safe(lambda: win.get_full_property(self.A_PID, self.X.AnyPropertyType))
+        return int(p.value[0]) if p is not None and len(p.value) else None
 
     def _viewable(self, win) -> bool:
         at = self._safe(lambda: win.get_attributes())
@@ -98,6 +104,8 @@ class X11Embedder:
             cls = self._safe(lambda: w.get_wm_class())
             if not cls or not any(k in (cls[0] + " " + cls[1]).lower() for k in ("kicad", "pcbnew")):
                 continue
+            if self.owner_pid is not None and self._pid(w) not in (None, self.owner_pid):
+                continue                                    # baska bir KiCad ornegi
             if not self._viewable(w):
                 continue
             r = self._rect(w)

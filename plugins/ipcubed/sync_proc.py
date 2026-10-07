@@ -28,11 +28,17 @@ def _sync_main(cmd_q, out_q, ppid=None):
     import os
     import queue
     from .sync import SyncThread
-    try:                              # onceki oturumlardan kalan veri dosyalari
+    try:                              # onceki oturumlardan kalan veri dosyalari (ayni anda calisan baska viewer'inkiler kalir)
+        import psutil
         from .paths import cache_dir
         for p in (cache_dir().parent / "snap").glob("*.pkl"):
-            p.unlink()
-    except OSError:
+            try:
+                owner = int(p.stem.split("_")[0])
+            except ValueError:
+                owner = -1
+            if owner != os.getpid() and not psutil.pid_exists(owner):
+                p.unlink()
+    except (OSError, ImportError):
         pass
     t = SyncThread(out_q)
     t.ship_files = True

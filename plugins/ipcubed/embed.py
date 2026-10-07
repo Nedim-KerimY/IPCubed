@@ -11,6 +11,13 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 
 def make_embedder():
+    e = _make_embedder()
+    from .ctl import kicad_pid
+    e.owner_pid = kicad_pid()                 # yalniz bu KiCad'in penceresine bindir (ayni anda iki KiCad acik olabilir)
+    return e
+
+
+def _make_embedder():
     if sys.platform == "win32":
         return WinEmbedder()
     if sys.platform.startswith("linux"):
@@ -22,6 +29,7 @@ def make_embedder():
 
 
 class WinEmbedder:
+    owner_pid = None
     GWLP_HWNDPARENT = -8
     SWP_NOZORDER, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x4, 0x10, 0x40
     TCM_GETCURSEL = 0x130B
@@ -92,6 +100,8 @@ class WinEmbedder:
             n = (p.info["name"] or "").lower()
             if (n.startswith("pcbnew") or n.startswith("kicad")) and "cli" not in n:
                 names[p.pid] = n
+        if self.owner_pid is not None:
+            names = {k: v for k, v in names.items() if k == self.owner_pid}
         if not names:
             return None
         cands = []

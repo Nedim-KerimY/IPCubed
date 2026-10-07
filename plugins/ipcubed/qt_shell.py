@@ -17,12 +17,20 @@ def _log(msg: str):
 
 
 def port_file():
-    return config_dir() / "port"
+    from .ctl import port_path
+    return port_path()                    # KiCad ornegi basina ayri (ayni anda iki KiCad: iki viewer)
 
 
 def kicad_running() -> bool:
-    """Herhangi bir KiCad sureci (proje yoneticisi ya da tek basina pcbnew) calisiyor mu? kicad-cli sayilmaz."""
+    """Bagli KiCad (bilinmiyorsa herhangi bir KiCad: proje yoneticisi ya da tek basina pcbnew) calisiyor mu? kicad-cli sayilmaz."""
     import psutil
+    from .ctl import kicad_pid
+    pid = kicad_pid()
+    if pid is not None:
+        try:
+            return psutil.Process(pid).is_running() and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.Error:
+            return False
     for p in psutil.process_iter(["name"]):
         n = (p.info["name"] or "").lower()
         if (n.startswith("kicad") or n.startswith("pcbnew")) and "cli" not in n:

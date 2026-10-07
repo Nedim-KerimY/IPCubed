@@ -23,9 +23,31 @@ def config_dir() -> Path:
     return base / "ipcubed"
 
 
+def instance_key() -> str:
+    """Her KiCad ornegine ayri viewer. Anahtar, KiCad'in API soketi: ilk ornek 'api.sock', sonrakiler 'api-<pid>.sock'."""
+    import re
+    sock = os.environ.get("KICAD_API_SOCKET", "")
+    if not sock:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", re.split(r"[\\/]", sock.split("://", 1)[-1])[-1].rsplit(".", 1)[0])
+
+
+def port_path() -> Path:
+    k = instance_key()
+    return config_dir() / (f"port-{k}" if k else "port")
+
+
+def kicad_pid() -> int | None:
+    """Viewer'in bagli oldugu KiCad sureci (3D Live'i calistiran). Bilinmiyorsa None: herhangi bir KiCad."""
+    try:
+        return int(os.environ["IPCUBED_KICAD_PID"])
+    except (KeyError, ValueError):
+        return None
+
+
 def send(cmd: str, timeout: float = 2.0) -> bool:
     try:
-        port = int((config_dir() / "port").read_text().strip())
+        port = int(port_path().read_text().strip())
         with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
             s.sendall((cmd + "\n").encode())
             s.settimeout(timeout)
@@ -98,6 +120,8 @@ def _check_started(p, log: Path, timeout: float = 30.0) -> None:
 
 
 def main(cmd: str = "toggle") -> int:
+    if os.environ.get("KICAD_API_SOCKET"):        # eklenti olarak calisiyoruz: ust surec bu 3D Live'a basilan KiCad
+        os.environ.setdefault("IPCUBED_KICAD_PID", str(os.getppid()))
     if send(cmd):
         return 0
     if cmd == "quit":
