@@ -1,0 +1,22 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "io.github.ipcubed",
+  "name": "IPCubed 3D Live",
+  "description": "Fast, live, full-stackup 3D view on top of the PCB editor (press 3 in the canvas after the first launch).",
+  "runtime": {
+    "type": "python",
+    "min_version": "3.10"
+  },
+  "actions": [
+    {
+      "identifier": "toggle3d",
+      "name": "3D Live",
+      "description": "Toggle the IPCubed live 3D view",
+      "show-button": true,
+      "scopes": ["pcb"],
+      "entrypoint": "toggle.py",
+      "icons-light": ["icon-light.png"],
+      "icons-dark": ["icon-dark.png"]
+    }
+  ]
+}

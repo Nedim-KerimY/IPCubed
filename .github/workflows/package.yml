@@ -1,0 +1,36 @@
+name: Package KiCad plugin
+
+on:
+  push:
+    branches: [kicad-plugin]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build PCM zip
+        id: build
+        run: |
+          python tools/build_pcm_zip.py dist
+          echo "version=$(python -c "import json;print(json.load(open('metadata.json'))['versions'][0]['version'])")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IPCubed-pcm
+          path: dist/*.zip
+      - name: Publish release (latest build of this version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.build.outputs.version }}
+        run: |
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" --prerelease \
+            --title "IPCubed $TAG" \
+            --notes "KiCad: Plugin and Content Manager > Install from File... and pick IPCubed-*-pcm.zip. See README on the kicad-plugin branch."

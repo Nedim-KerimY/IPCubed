@@ -2,8 +2,10 @@
 .venv/
 __pycache__/
 *.py[cod]
+dist/
 
 # Test / render outputs
 *.png
 *.pkl
-!docs/**/*.png
+!plugins/*.png
+!resources/*.png
