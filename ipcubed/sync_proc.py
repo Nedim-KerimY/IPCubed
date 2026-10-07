@@ -13,7 +13,20 @@ import multiprocessing as mp
 import threading
 
 
-def _sync_main(cmd_q, out_q):
+def _parent_alive(ppid: int) -> bool:
+    import os
+    if os.name != "nt" and os.getppid() != ppid:       # POSIX: ebeveyn olunce init/subreaper'a devredilir
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(ppid)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _sync_main(cmd_q, out_q, ppid=None):
+    import os
+    import queue
     from .sync import SyncThread
     try:                              # onceki oturumlardan kalan veri dosyalari
         from .paths import cache_dir
@@ -25,9 +38,14 @@ def _sync_main(cmd_q, out_q):
     t.ship_files = True
     t.visible = False                 # vekil (SyncProcess) gizli varsayar; gorunurluk komutla gelir
     t.start()
+    out_q.cancel_join_thread()        # cikista okunmayan mesajlar yuzunden takilma
     while True:
         try:
-            cmd = cmd_q.get()
+            cmd = cmd_q.get(timeout=2.0)
+        except queue.Empty:
+            if ppid is not None and not _parent_alive(ppid):
+                os._exit(0)           # ana surec coktu/olduruldu: yetim kalip KiCad'i yoklamaya devam etme
+            continue
         except (EOFError, OSError):
             break
         name = cmd[0]
@@ -61,7 +79,8 @@ class SyncProcess:
         ctx = mp.get_context("spawn")
         self._cmd = ctx.Queue()
         self.out = ctx.Queue()
-        self._p = ctx.Process(target=_sync_main, args=(self._cmd, self.out), daemon=True, name="ipcubed-sync")
+        import os
+        self._p = ctx.Process(target=_sync_main, args=(self._cmd, self.out, os.getpid()), daemon=True, name="ipcubed-sync")
         self._visible = False
         self.request_full = _Flag(self._send, "full")
         self.check_now = _Flag(self._send, "check")

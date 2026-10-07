@@ -202,15 +202,17 @@ class KiCadSource:
         self.board = self.kicad.get_board()
         self._fp_silk: dict = {}                # footprint kiid -> hafif silk ozeti (ham footprint nesneleri cok RAM tutar)
         self._silk_extra: set = set()
+        self._fp_hash: dict = {}                # footprint kiid -> ham protobuf hash'i (silk ozeti hangi footprint'te bayat?)
         self._poses: dict = {}                  # footprint kiid -> (x, y, aci, alt_yuz): son bilinen konumlar (canli tasima)
 
     def refresh_board(self):
         self.board = self.kicad.get_board()
 
-    def _silk(self, board, raw_fps, extra):
+    def _silk(self, board, raw_fps, extra, fp_hash):
         from .silk import fetch_silk
         self._silk_extra = set(extra)
         self._fp_silk = {}
+        self._fp_hash = fp_hash
         return fetch_silk(board, raw_fps, extra, cache=self._fp_silk)
 
     def snapshot(self, with_copper: bool = True) -> BoardSnapshot:
@@ -225,6 +227,7 @@ class KiCadSource:
             proj = Path(b.document.project.path)
         except Exception:
             pass
+        fp_hash = self._fp_hashes()            # footprint'lerden ONCE: arada degisen footprint sonraki kontrolde yakalanir
         raw_fps = b.get_footprints()
         fps = [_footprint_data(f) for f in raw_fps]
         self._poses = {f.kiid: (f.x, f.y, f.angle, f.bottom) for f in fps}
@@ -249,22 +252,24 @@ class KiCadSource:
             footprints=fps,
             copper=cd,
             stack=stack,
-            silk=self._silk(b, raw_fps, [l.layer_id for l in stack.copper()] + [41, 42]) if with_copper else None,
+            silk=self._silk(b, raw_fps, [l.layer_id for l in stack.copper()] + [41, 42], fp_hash) if with_copper else None,
             mask_expansion=mask_exp,
             embedded=embedded,
             poses=dict(self._poses),
         )
 
     # --- canli degisim tespiti ---------------------------------------------
-    def _raw_hash(self, types) -> str:
-        """Ogeleri protobuf olarak al ve baytlarini hash'le: python nesnesine cevirmeden (cok hizli) degisim tespiti."""
-        import hashlib
+    def _raw_items(self, types):
         from kipy.proto.common.commands.editor_commands_pb2 import GetItems, GetItemsResponse
         cmd = GetItems()
         cmd.header.document.CopyFrom(self.board._doc)
         cmd.types.extend(types)
-        resp = self.board._kicad.send(cmd, GetItemsResponse)
-        return hashlib.blake2b(resp.SerializeToString(), digest_size=8).hexdigest()
+        return self.board._kicad.send(cmd, GetItemsResponse)
+
+    def _raw_hash(self, types) -> str:
+        """Ogeleri protobuf olarak al ve baytlarini hash'le: python nesnesine cevirmeden (cok hizli) degisim tespiti."""
+        import hashlib
+        return hashlib.blake2b(self._raw_items(types).SerializeToString(), digest_size=8).hexdigest()
 
     def pads_raw_hash(self) -> str:
         from kipy.proto.common.types import KiCadObjectType as K
@@ -275,7 +280,9 @@ class KiCadSource:
         from kipy.proto.common.types import KiCadObjectType as K
         groups = ([K.KOT_PCB_TRACE, K.KOT_PCB_ARC], [K.KOT_PCB_VIA], [K.KOT_PCB_ZONE], [K.KOT_PCB_PAD],
                   [K.KOT_PCB_SHAPE], [K.KOT_PCB_TEXT, K.KOT_PCB_TEXTBOX])
-        return tuple(self._raw_hash(g) for g in groups) + (self._stackup_hash(),)
+        # 7: footprint'ler (alanlar/yazilar ve footprint ici silk sekilleri dahil). Ust duzey KOT_PCB_SHAPE/TEXT footprint
+        # cocuklarini KAPSAMAZ: referans yazisini tasimak/degistirmek ya da footprint'i tasimak yalniz burada gorunur.
+        return tuple(self._raw_hash(g) for g in groups) + (self._stackup_hash(), self._raw_hash([K.KOT_PCB_FOOTPRINT]))
 
     def _stackup_hash(self) -> str:
         """Kart stackup'i (kalinliklar, yuzey kaplama turu, renkler) ham hash'i: Board Setup degisince yakalanir."""
@@ -398,7 +405,8 @@ class KiCadSource:
             else:
                 plan["stack"] = True                     # yalniz kaplama turu / renk: yeniden uretim yok, renk aninda
         sd, outline = prev.silk, prev.outline_lines
-        if 4 in diff or 5 in diff:
+        fp_silk = 7 in diff and self._refresh_fp_silk()
+        if 4 in diff or 5 in diff or fp_silk:
             from .silk import fetch_silk
             sd = fetch_silk(b, [], stack_ids + [41, 42], cache=self._fp_silk)
             outline = _outline_from_shapes(b.get_shapes(), BoardLayer.BL_Edge_Cuts)
@@ -413,6 +421,42 @@ class KiCadSource:
                 plan["body"] = True
         cd2 = dataclasses.replace(cd, net_names=names, **new)
         return dataclasses.replace(prev, copper=cd2, silk=sd, outline_lines=outline, poses=poses, stack=stack), plan
+
+    def _raw_footprints(self):
+        """-> [(kiid, hash, protobuf)] Python nesnesine cevirmeden (hash ham baytlardan)."""
+        import hashlib
+        from kipy.proto.board.board_types_pb2 import FootprintInstance as FpProto
+        from kipy.proto.common.types import KiCadObjectType as K
+        out = []
+        for it in self._raw_items([K.KOT_PCB_FOOTPRINT]).items:
+            p = FpProto()
+            if it.Unpack(p):
+                out.append((p.id.value, hashlib.blake2b(it.value, digest_size=8).hexdigest(), p))
+        return out
+
+    def _fp_hashes(self) -> dict:
+        try:
+            return {k: h for k, h, _ in self._raw_footprints()}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _refresh_fp_silk(self) -> bool:
+        """Degisen footprint'lerin silk/bakir/maske ozetini yenile (yalniz onlar Python nesnesine cevrilir). -> degisen var mi."""
+        from kipy.board_types import FootprintInstance
+        from .silk import fp_silk_part
+        seen, changed = set(), False
+        for k, h, p in self._raw_footprints():
+            seen.add(k)
+            if self._fp_hash.get(k) == h and k in self._fp_silk:
+                continue
+            self._fp_hash[k] = h
+            self._fp_silk[k] = fp_silk_part(FootprintInstance(proto=p), self._silk_extra)
+            changed = True
+        for k in set(self._fp_silk) - seen:              # silinen footprint'ler
+            self._fp_silk.pop(k, None)
+            self._fp_hash.pop(k, None)
+            changed = True
+        return changed
 
     def pad_signature(self) -> dict[str, int]:
         """footprint KIID -> pad konum hash'i. ~45 ms, tum kart icin."""
@@ -433,6 +477,7 @@ class KiCadSource:
             for f in self.board.get_items_by_id(kids):
                 from .silk import fp_silk_part
                 self._fp_silk[f.id.value] = fp_silk_part(f, self._silk_extra)
+                self._fp_hash.pop(f.id.value, None)      # silk mesh'i henuz eski konumda: geometri kontrolu yeniden uretsin
                 fd = _footprint_data(f)
                 self._poses[fd.kiid] = (fd.x, fd.y, fd.angle, fd.bottom)
                 out.append(fd)

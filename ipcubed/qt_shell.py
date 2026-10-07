@@ -20,6 +20,16 @@ def port_file():
     return config_dir() / "port"
 
 
+def kicad_running() -> bool:
+    """Herhangi bir KiCad sureci (proje yoneticisi ya da tek basina pcbnew) calisiyor mu? kicad-cli sayilmaz."""
+    import psutil
+    for p in psutil.process_iter(["name"]):
+        n = (p.info["name"] or "").lower()
+        if (n.startswith("kicad") or n.startswith("pcbnew")) and "cli" not in n:
+            return True
+    return False
+
+
 class ViewerFrame(QtWidgets.QWidget):
     """Gorunum penceresi: solda (istege bagli) 3D Ayarlari paneli + sagda 3D viewport. KiCad uzerine bindirilen / harici pencere olan bu."""
     closed = QtCore.Signal()
@@ -43,7 +53,7 @@ def _rec_icon() -> QtGui.QIcon:
 
 
 class ViewerShell(QtCore.QObject):
-    def __init__(self, embed: bool = True, show_now: bool = False):
+    def __init__(self, embed: bool = True, show_now: bool = False, persist: bool = False):
         super().__init__()
         from rendercanvas.qt import QRenderWidget  # Qt secildikten sonra
 
@@ -98,6 +108,7 @@ class ViewerShell(QtCore.QObject):
         QtGui.QShortcut(QtGui.QKeySequence("Esc"), self.frame, activated=self._esc)
         QtGui.QShortcut(QtGui.QKeySequence("2"), self.frame, activated=self.hide3d)
 
+        self._persist = persist                   # False: KiCad tamamen kapaninca daemon da cikar
         self._closing = False
         self._pending_show = False
         self._shown = False
@@ -327,6 +338,8 @@ class ViewerShell(QtCore.QObject):
 
     # ------------------------------------------------------------ dongu
     _editor_up = False
+    _seen_editor = False
+    _gone_since = None
 
     def _watch_editor(self):
         """Gomulu mod: PCB duzenleyici var mi? Belirince KiCad'e baglan (hazirda bekle), kaybolunca birak. 3 tusunu dinle."""
@@ -344,6 +357,7 @@ class ViewerShell(QtCore.QObject):
             up = self._editor_up
         if up:
             self._gone_since = None
+            self._seen_editor = True
             if not self._editor_up:
                 _log("PCB duzenleyici bulundu")
                 self._editor_up = True
@@ -359,6 +373,18 @@ class ViewerShell(QtCore.QObject):
                 if self._shown and not self._external:
                     self._finish_hide()
                 self.core.stop_sync()                # KiCad yokken sifir polling
+        if not up and not self._persist and self._seen_editor and now - (self._gone_since or now) > 5:
+            # PCB duzenleyici kapandi: proje yoneticisi de yoksa (KiCad tamamen kapandi) daemon'u kapat.
+            # Yalniz pcbnew kapanip KiCad acik kaldiysa beklemeye devam: yeniden acilinca '3' hemen calissin.
+            if now - getattr(self, "_kicad_chk", 0) > 2:
+                self._kicad_chk = now
+                try:
+                    alive = kicad_running()
+                except Exception:  # noqa: BLE001
+                    alive = True
+                if not alive:
+                    _log("KiCad kapandi -> cikis")
+                    self.quit()
 
     def _tick(self):
         self.core.tick()
@@ -378,6 +404,14 @@ class ViewerShell(QtCore.QObject):
             else:
                 self._closing = False         # bagimsiz modda pencere kalir (2D gorunumde)
                 self._shown = True
+
+    def quit(self):
+        if self._external:
+            self.return_to_kicad()
+        if self._shown:
+            self._finish_hide()
+        self.timer.stop()
+        QtWidgets.QApplication.quit()
 
     def _finish_hide(self):
         self._closing = False
@@ -423,7 +457,7 @@ class ViewerShell(QtCore.QObject):
             elif cmd == "return":
                 self.return_to_kicad()
             elif cmd == "quit":
-                QtWidgets.QApplication.quit()
+                self.quit()
 
 
 def run(args):
@@ -439,11 +473,33 @@ def run(args):
     app.setApplicationName("ipcubed")
     from . import theme
     theme.apply_app_font(app)
-    shell = ViewerShell(embed=not getattr(args, "standalone", False), show_now=getattr(args, "show", False))
+    shell = ViewerShell(embed=not getattr(args, "standalone", False), show_now=getattr(args, "show", False),
+                        persist=getattr(args, "persist", False))
     code = app.exec()
-    shell.core.close()
     try:
-        port_file().unlink()
+        if port_file().read_text().strip() == str(shell.server.serverPort()):
+            port_file().unlink()
     except OSError:
         pass
-    return code
+    try:
+        shell.core.close()
+    finally:
+        _kill_children()
+    # Calisan model/mesh isleri ve ProcessPool yonetici thread'leri yorumlayici cikisini bekletmesin: dogrudan cik
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
+def _kill_children():
+    """Senkron sureci ve isci havuzlari (spawn) geride kalmasin."""
+    try:
+        import psutil
+        kids = psutil.Process().children(recursive=True)
+        for k in kids:
+            k.terminate()
+        _, alive = psutil.wait_procs(kids, timeout=1.5)
+        for k in alive:
+            k.kill()
+    except Exception:  # noqa: BLE001
+        pass

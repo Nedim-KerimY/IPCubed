@@ -22,7 +22,8 @@ In KiCad: *Preferences → Plugins → Enable KiCad API*.
 ## Run
 
 ```bash
-python -m ipcubed                # background daemon; press 3 in the PCB editor canvas (Windows, Linux/X11)
+python -m ipcubed                # background daemon; press 3 in the PCB editor canvas (Windows, Linux/X11); exits when KiCad closes
+python -m ipcubed --persist      # same, but keeps running after KiCad closes (used by autostart)
 python -m ipcubed --standalone --show     # plain window (any OS, also Wayland)
 python -m ipcubed.ctl toggle|show|hide|quit    # control a running daemon (bind to a desktop shortcut on Wayland)
 python -m ipcubed.autostart [--off]      # start at login (Windows registry / XDG autostart / macOS LaunchAgent)

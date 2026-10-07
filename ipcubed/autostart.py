@@ -1,5 +1,7 @@
 """Viewer'i oturum acilisinda arka planda baslat (istege bagli). python -m ipcubed.autostart [--off]
 
+Oturumla baslayan daemon `--persist` ile calisir: KiCad kapaninca cikmaz, bir sonraki KiCad'i bekler.
+
 Windows: HKCU Run; Linux: ~/.config/autostart/ipcubed.desktop; macOS: LaunchAgent.
 """
 from __future__ import annotations
@@ -15,7 +17,7 @@ def command() -> str:
     pyw = exe.with_name("pythonw.exe") if sys.platform == "win32" else exe
     py = pyw if pyw.exists() else exe
     root = Path(__file__).resolve().parents[1]
-    code = f"import sys,runpy; sys.path.insert(0, r'{root}'); runpy.run_module('ipcubed', run_name='__main__')"
+    code = f"import sys,runpy; sys.path.insert(0, r'{root}'); sys.argv[1:] = ['--persist']; runpy.run_module('ipcubed', run_name='__main__')"
     return f'"{py}" -c "{code}"'
 
 
@@ -53,7 +55,7 @@ def set_autostart(on: bool) -> str:
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>com.ipcubed</string>
-<key>ProgramArguments</key><array><string>{sys.executable}</string><string>-m</string><string>ipcubed</string></array>
+<key>ProgramArguments</key><array><string>{sys.executable}</string><string>-m</string><string>ipcubed</string><string>--persist</string></array>
 <key>WorkingDirectory</key><string>{root}</string>
 <key>RunAtLoad</key><true/>
 </dict></plist>
@@ -68,7 +70,7 @@ def set_autostart(on: bool) -> str:
 Type=Application
 Name=IPCubed
 Comment=Fast live 3D viewer for the KiCad PCB editor
-Exec="{sys.executable}" -m ipcubed
+Exec="{sys.executable}" -m ipcubed --persist
 Path={root}
 Terminal=false
 X-GNOME-Autostart-enabled=true

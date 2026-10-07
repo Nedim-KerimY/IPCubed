@@ -12,6 +12,7 @@ if __name__ == "__main__":
     ap.add_argument("--xray", action="store_true", help="test: tum katmanlar, saydam kart")
     ap.add_argument("--standalone", action="store_true", help="KiCad penceresine gomme, bagimsiz pencere ac")
     ap.add_argument("--show", action="store_true", help="acilir acilmaz 3D'yi goster")
+    ap.add_argument("--persist", action="store_true", help="KiCad kapaninca cikma (oturumla baslayan daemon)")
     ap.add_argument("--legacy", action="store_true", help="eski glfw/pygfx penceresi")
     args = ap.parse_args()
     if args.screenshot or args.legacy:
