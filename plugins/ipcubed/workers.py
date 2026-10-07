@@ -99,13 +99,14 @@ def _extras_worker(cd, stack):
     return {"barrel": build_barrels(_cd(cd), zmap)}
 
 
-def _silk_worker(sd, stack, outline=None):
+def _silk_worker(sd, stack, outline=None, sides=("top", "bottom")):
+    """sides: yalniz degisen yuz(ler) uretilir (canli duzenleme; buyuk kartta yuz basina ~1 sn)."""
     from .silk import build_silk
     sd = _sd(sd)
     out = {}
     if sd is None:
         return out
-    for side in ("top", "bottom"):
+    for side in sides:
         z = stack.thickness + stack.mask_t + 0.002 if side == "top" else -stack.mask_t - 0.002
         m = build_silk(sd, side, z, outline)
         if m is not None:

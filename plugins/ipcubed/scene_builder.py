@@ -629,7 +629,7 @@ class ViewerScene:
             jobs.append(self._sub_fast(_via_worker, cd, [(l.layer_id, l.z0, l.z1, l.side) for l in st.copper()],
                                        {l.layer_id: (l.z0, l.z1) for l in st.copper()}, tent))
         if m["silk"] and sd is not None:
-            jobs.append(self._sub(_silk_worker, sd, st, snap.outline_lines))
+            jobs.append(self._sub(_silk_worker, sd, st, snap.outline_lines, tuple(m.get("silk_sides") or ("top", "bottom"))))
         if m["barrel"]:
             jobs.append(self._sub(_extras_worker, cd, st))
         self.layer_futures = jobs

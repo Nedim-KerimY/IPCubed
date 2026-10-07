@@ -178,6 +178,17 @@ def _tracks_touch(old, new, box) -> bool:
     return False
 
 
+def _pad_same(p, q) -> bool:
+    """Iki pad kaydi 3D'de ayni mi (konum, aci, katman, delik, ag, maske, sekiller)?"""
+    if (p.x, p.y, p.angle, p.layers, p.drill_w, p.drill_h, p.npth, p.net, p.mask_front, p.mask_back) != \
+            (q.x, q.y, q.angle, q.layers, q.drill_w, q.drill_h, q.npth, q.net, q.mask_front, q.mask_back):
+        return False
+    for a, b in ((p.front, q.front), (p.back, q.back), (p.inner, q.inner)):
+        if (a is None) != (b is None) or (a is not None and (a.shape != b.shape or not np.allclose(a, b))):
+            return False
+    return True
+
+
 def _same(a, b) -> bool:
     if a is None or b is None:
         return a is None and b is None or (a is not None and len(a) == 0) or (b is not None and len(b) == 0)
@@ -204,6 +215,11 @@ class KiCadSource:
         self._silk_extra: set = set()
         self._fp_hash: dict = {}                # footprint kiid -> ham protobuf hash'i (silk ozeti hangi footprint'te bayat?)
         self._poses: dict = {}                  # footprint kiid -> (x, y, aci, alt_yuz): son bilinen konumlar (canli tasima)
+        self._pad_sigs: dict = {}               # pad kiid -> ham pad hash'i: kismi yenilemede yalniz degisen pad'lerin sekli istenir
+        self._silk_dirty = False                # footprint silk ozeti degisti (tasima/duzenleme): sonraki yenileme silk uretsin
+        self._dirty_sides: set = set()          # o degisikligin dokundugu silk yuzleri ("top"/"bottom")
+        self._dirty_extra: set = set()          # ... ve bakir/maske katmanlari (footprint ici logo, bakir yazi)
+        self._hot_fp: dict = {}                 # tasinan footprint kiid -> bu ana dek tek tek yeniden kontrol (KiCad bayat donebilir)
 
     def refresh_board(self):
         self.board = self.kicad.get_board()
@@ -212,6 +228,7 @@ class KiCadSource:
         from .silk import fetch_silk
         self._silk_extra = set(extra)
         self._fp_silk = {}
+        self._silk_dirty, self._dirty_sides, self._dirty_extra = False, set(), set()     # tam yukleme: bekleyen kismi silk yok
         self._fp_hash = fp_hash
         return fetch_silk(board, raw_fps, extra, cache=self._fp_silk)
 
@@ -241,7 +258,7 @@ class KiCadSource:
                 embedded = extract_embedded(b.get_as_string(), need)
             except Exception as e:  # noqa: BLE001
                 print("gomulu model okunamadi:", e)
-        cd = fetch_copper(b, [l.layer_id for l in stack.copper()]) if with_copper else None
+        cd = fetch_copper(b, [l.layer_id for l in stack.copper()], pad_sigs=self._pad_sigs) if with_copper else None
         if cd is not None:
             cd.tent_rules = (tent_f, tent_b)
         return BoardSnapshot(
@@ -349,7 +366,7 @@ class KiCadSource:
         b = self.board
         poses = dict(self._poses)                # bu verinin konum zamani (canli tasima icin pad taban konumu)
         ids = [l.layer_id for l in prev.stack.copper()]
-        cd = fetch_copper(b, ids, prev=prev.copper)
+        cd = fetch_copper(b, ids, prev=prev.copper, pad_sigs=self._pad_sigs)
         if prev.copper is not None:
             cd.tent_rules = prev.copper.tent_rules
         sd = fetch_silk(b, [], ids + [41, 42], cache=self._fp_silk)
@@ -401,20 +418,26 @@ class KiCadSource:
             plan["body_tiles"] |= tiles_for(bounds, pts)
         if 3 in diff:
             poses = dict(self._poses)
-            new["pads"], new["fp_index"] = fetch_pads(b, ids, nid, cd)
-            plan["cu"] |= ids
-            plan["barrel"] = plan["pads"] = True
+            new["pads"], new["fp_index"] = fetch_pads(b, ids, nid, cd, self._pad_sigs)
+            plan["pads"] = True
             old = {p.kiid: p for p in cd.pads}
-            pts = []
+            pts, changed = [], []
             for p in new["pads"]:                                 # degisen pad'lerin eski ve yeni yerleri -> govde/maske karolari
                 q = old.pop(p.kiid, None)
-                if q is None or (q.x, q.y, q.angle, q.layers, q.drill_w, q.drill_h) != (p.x, p.y, p.angle, p.layers, p.drill_w, p.drill_h) \
-                        or (p.front is None) != (q.front is None) or (p.front is not None and (p.front.shape != q.front.shape or not np.allclose(p.front, q.front))):
+                if q is None or not _pad_same(p, q):
+                    changed.append(p)
                     pts.append(_pad_circle(p))
                     if q is not None:
+                        changed.append(q)
                         pts.append(_pad_circle(q))
-            pts += [_pad_circle(q) for q in old.values()]            # silinen pad'ler
+            changed += list(old.values())                          # silinen pad'ler
+            pts += [_pad_circle(q) for q in old.values()]
             plan["body_tiles"] |= tiles_for(bounds, pts)
+            # yalniz degisen pad'lerin bakir katmanlari: SMD -> tek katman (12 katmanin hepsi ~8 sn isci yukuydu). Delikli -> hepsi.
+            drilled = any(q.drill_w > 0 or q.drill_h > 0 for q in changed)
+            lay = ids if drilled or not changed else set().union(*(q.layers for q in changed)) & ids
+            plan["cu"] |= lay or ids
+            plan["barrel"] = drilled or not changed
         if 2 in diff:
             z = fetch_zones(b, ids, nid)
             new["zones"] = z
@@ -433,16 +456,22 @@ class KiCadSource:
                 plan["stack"] = True                     # yalniz kaplama turu / renk: yeniden uretim yok, renk aninda
         sd, outline = prev.silk, prev.outline_lines
         fp_silk = 7 in diff and self._refresh_fp_silk()
-        if 4 in diff or 5 in diff or fp_silk:
+        board_silk = 4 in diff or 5 in diff                  # kart duzeyi sekil/yazi: hangi yuz bilinmez, iki yuz
+        if board_silk or fp_silk or self._silk_dirty:
             from .silk import fetch_silk
             sd = fetch_silk(b, [], stack_ids + [41, 42], cache=self._fp_silk)
             outline = _outline_from_shapes(b.get_shapes(), BoardLayer.BL_Edge_Cuts)
             plan["full"] = outline != prev.outline_lines
             plan["silk"] = True
-            lay = set()
-            for s in (sd, prev.silk):                 # bakir / maske katmanlarinda grafik (logo, cutout) olan katmanlar
-                if s is not None:
-                    lay |= {L for L, v in s.extra_shapes.items() if v} | {L for L, v in s.extra_texts.items() if v}
+            plan["silk_sides"] = ("top", "bottom") if board_silk else tuple(sorted(self._dirty_sides)) or ("top", "bottom")
+            if board_silk:
+                lay = set()
+                for s in (sd, prev.silk):                 # bakir / maske katmanlarinda grafik (logo, cutout) olan katmanlar
+                    if s is not None:
+                        lay |= {L for L, v in s.extra_shapes.items() if v} | {L for L, v in s.extra_texts.items() if v}
+            else:
+                lay = set(self._dirty_extra)              # yalniz degisen footprint'lerin bakir/maske grafikleri
+            self._silk_dirty, self._dirty_sides, self._dirty_extra = False, set(), set()
             plan["cu"] |= lay & ids
             if lay & {41, 42}:
                 plan["body"] = True
@@ -480,12 +509,42 @@ class KiCadSource:
             if self._fp_hash.get(k) == h and k in self._fp_silk:
                 continue
             self._fp_hash[k] = h
-            self._fp_silk[k] = fp_silk_part(FootprintInstance(proto=p), self._silk_extra)
+            self._note_fp_silk(k, fp_silk_part(FootprintInstance(proto=p), self._silk_extra))
             changed = True
         for k in set(self._fp_silk) - seen:              # silinen footprint'ler
-            self._fp_silk.pop(k, None)
+            self._note_fp_silk(k, None)
             self._fp_hash.pop(k, None)
             changed = True
+        return changed
+
+    def _note_fp_silk(self, k, part):
+        """Footprint silk ozetini guncelle; eski ve yeni ozetin dokundugu yuzleri/katmanlari isaretle (yalniz onlar uretilir)."""
+        old = self._fp_silk.pop(k, None)
+        if part is not None:
+            self._fp_silk[k] = part
+        for sp in (old, part):
+            if sp is None:
+                continue
+            self._dirty_sides |= {sd for sd in ("top", "bottom") if sp.shapes[sd] or sp.texts[sd]}
+            self._dirty_extra |= {L for L, v in sp.extra_shapes.items() if v} | {L for L, v in sp.extra_texts.items() if v}
+        self._silk_dirty = True
+
+    def silk_pending(self) -> bool:
+        return self._silk_dirty
+
+    def recheck_hot(self) -> bool:
+        """Az once tasinan footprint'leri TEK TEK yeniden iste (birkac ms): KiCad tasimadan hemen sonra eski konumu dondurmus olabilir.
+        Tum footprint'leri cekmek (~0.8 sn, KiCad'i kilitler) yerine. -> silk degisti mi."""
+        import time
+        now = time.monotonic()
+        self._hot_fp = {k: t for k, t in self._hot_fp.items() if t > now}
+        if not self._hot_fp:
+            return False
+        before = self._silk_dirty
+        self._silk_dirty = False
+        self.footprints_by_id(list(self._hot_fp), rehot=False)
+        changed = self._silk_dirty
+        self._silk_dirty = before or changed
         return changed
 
     def pad_signature(self) -> dict[str, int]:
@@ -496,9 +555,15 @@ class KiCadSource:
             sig[k] = sig.get(k, 0) ^ hash((p.position.x, p.position.y, p.id.value))
         return sig
 
-    def footprints_by_id(self, ids: list[str]) -> list[FootprintData]:
+    def footprints_by_id(self, ids: list[str], rehot: bool = True) -> list[FootprintData]:
+        """Tasinan footprint'ler (canli tasima yolu). Silk ozeti de yenilenir; ham hash degismediyse dokunulmaz."""
+        import hashlib
+        import time
         from kipy.proto.common.types import KIID
         out = []
+        if rehot:
+            until = time.monotonic() + 5.0
+            self._hot_fp.update({k: until for k in ids})
         for i in range(0, len(ids), 50):
             kids = []
             for s in ids[i:i + 50]:
@@ -506,8 +571,10 @@ class KiCadSource:
                 kids.append(k)
             for f in self.board.get_items_by_id(kids):
                 from .silk import fp_silk_part
-                self._fp_silk[f.id.value] = fp_silk_part(f, self._silk_extra)
-                self._fp_hash.pop(f.id.value, None)      # silk mesh'i henuz eski konumda: geometri kontrolu yeniden uretsin
+                h = hashlib.blake2b(f.proto.SerializeToString(), digest_size=8).hexdigest()
+                if self._fp_hash.get(f.id.value) != h or f.id.value not in self._fp_silk:
+                    self._fp_hash[f.id.value] = h        # tam footprint kontrolu bunu degismis saymasin (ayni hash yontemi)
+                    self._note_fp_silk(f.id.value, fp_silk_part(f, self._silk_extra))
                 fd = _footprint_data(f)
                 self._poses[fd.kiid] = (fd.x, fd.y, fd.angle, fd.bottom)
                 out.append(fd)
