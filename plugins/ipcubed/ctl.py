@@ -34,6 +34,18 @@ def send(cmd: str, timeout: float = 2.0) -> bool:
         return False
 
 
+# KiCad, eklenti surecine kendi Python yollarini verir (Linux: PYTHONPATH=/usr/lib/python3/dist-packages, MATPLOTLIBRC=/etc/
+# matplotlib). Bunlar eklentinin sanal ortaminin ONUNE gecer: baska Python surumu icin derlenmis sistem paketleri (Pillow vb.)
+# yuklenir ve cokerek silkscreen'i (matplotlib) bozar. Viewer, kurucu ve pip bunlar olmadan calisir.
+_LEAKY_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "MATPLOTLIBRC", "MPLBACKEND")
+
+
+def clean_env() -> dict:
+    env = {k: v for k, v in os.environ.items() if k not in _LEAKY_ENV}
+    env["PYTHONNOUSERSITE"] = "1"                 # ~/.local site-packages da karismasin
+    return env
+
+
 def launch(*args: str, check: bool = True) -> None:
     """Viewer'i arka planda baslat. check: ilk saniyelerde coker ise (eksik sistem kutuphanesi vb.) kullaniciya nedenini goster."""
     py = Path(sys.executable)
@@ -43,7 +55,8 @@ def launch(*args: str, check: bool = True) -> None:
     cfg.mkdir(parents=True, exist_ok=True)
     log = cfg / "viewer.log"
     err = open(log, "w", encoding="utf-8", errors="replace")
-    kw: dict = {"cwd": str(Path(__file__).resolve().parents[1]), "stdin": subprocess.DEVNULL, "stdout": err, "stderr": err}
+    kw: dict = {"cwd": str(Path(__file__).resolve().parents[1]), "stdin": subprocess.DEVNULL, "stdout": err, "stderr": err,
+                "env": clean_env()}
     cmd = [str(py), "-m", "ipcubed", *args]
     if sys.platform == "win32":
         try:

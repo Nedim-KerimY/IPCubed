@@ -8,6 +8,11 @@ if __name__ == "__main__":
     args = ap.parse_args()
     import os
     import sys
+    if os.environ.get("PYTHONPATH"):                   # KiCad'den sizan sistem yollari (bkz. ctl.clean_env): alt surecler de gormesin
+        leaked = {os.path.normcase(os.path.abspath(p)) for p in os.environ.pop("PYTHONPATH").split(os.pathsep) if p}
+        sys.path[:] = [p for p in sys.path if os.path.normcase(os.path.abspath(p or ".")) not in leaked]
+    for k in ("MATPLOTLIBRC", "PYTHONHOME"):
+        os.environ.pop(k, None)
     if sys.platform == "win32" and os.path.basename(sys.executable).lower() == "python.exe" and not os.environ.get("IPCUBED_FG"):
         # konsol penceresi acilmasin: pythonw ile (konsolsuz) yeniden baslat. Hata ayiklamak icin IPCUBED_FG=1.
         import subprocess

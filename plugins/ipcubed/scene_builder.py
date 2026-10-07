@@ -46,6 +46,7 @@ def _hex(c: str, a: float = 1.0):
     return (int(c[0:2], 16) / 255, int(c[2:4], 16) / 255, int(c[4:6], 16) / 255, a)
 
 
+from .log import _log
 from .workers import (_warm_imports, _body_tiles_cuts, _body_worker, _cu_worker, _cuts_worker, _via_worker, _zone_worker, _extras_worker, _load_worker, _mask_worker,  # noqa: E402  (pygfx icermeyen hafif modul)
                       _silk_worker, _track_worker)
 
@@ -935,6 +936,7 @@ class ViewerScene:
                 import traceback
                 print("katman hatasi:", e)
                 traceback.print_exc()
+                _log(f"katman hatasi: {type(e).__name__}: {e}")
                 continue
             for key, mesh in res.items():
                 if mesh is not None:

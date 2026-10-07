@@ -20,8 +20,11 @@ DEPS = HERE / "deps.txt"
 TITLE = "IPCubed"
 
 
+SETUP_REV = b"2"        # kurulum yontemi degisti (2: temiz ortam + --ignore-installed): eski kurulumlar bir kez tamamlanir
+
+
 def _deps_hash() -> str:
-    return hashlib.sha256(DEPS.read_bytes()).hexdigest()[:16]
+    return hashlib.sha256(DEPS.read_bytes() + SETUP_REV).hexdigest()[:16]
 
 
 def _marker() -> Path:
@@ -245,7 +248,9 @@ def _ask_and_install(show: bool) -> bool:
 
 def _spawn_installer(show: bool) -> int:
     cmd = [sys.executable, "-m", "ipcubed.setup_deps", "--install"] + (["--show"] if show else [])
-    kw: dict = {"cwd": str(HERE.parent), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    from .ctl import clean_env
+    kw: dict = {"cwd": str(HERE.parent), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+                "env": clean_env()}
     if sys.platform == "win32":
         flags = 0x00000008 | 0x00000200 | 0x08000000           # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
         try:
@@ -275,9 +280,12 @@ def install(show: bool) -> int:
         with open(log, "w", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} IPCubed components -> {sys.prefix}\n")
             f.flush()
+            from .ctl import clean_env
+            # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
+            # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin
             r = subprocess.run([sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                                "--only-binary", ":all:", "--progress-bar", "off", "-r", str(DEPS)],
-                               stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                                "--only-binary", ":all:", "--ignore-installed", "--progress-bar", "off", "-r", str(DEPS)],
+                               stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=clean_env())
             f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {r.returncode}\n")
         if r.returncode == 0:
             _marker().write_text(json.dumps({"deps": _deps_hash(), "time": time.time()}))
