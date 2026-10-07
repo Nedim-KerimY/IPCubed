@@ -83,3 +83,7 @@ You can delete them to reset the plugin.
   workflow runs it on every push to this branch and publishes the zip as the `v<version>` pre-release.
   Bump `versions[0].version` in `metadata.json` for a new release.
 * To bring in changes from `main`: `git merge main` (the `ipcubed/` → `plugins/ipcubed/` move is followed by git).
+
+## License
+
+MIT, see [LICENSE](LICENSE).

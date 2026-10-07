@@ -19,6 +19,7 @@ def build(out_dir: Path) -> Path:
     out = out_dir / f"IPCubed-{version}-pcm.zip"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(ROOT / "metadata.json", "metadata.json")
+        z.write(ROOT / "LICENSE", "plugins/LICENSE")           # lisans eklentiyle birlikte kurulsun
         for folder in ("plugins", "resources"):
             for p in sorted((ROOT / folder).rglob("*")):
                 if p.is_file() and not SKIP & set(p.parts) and p.suffix not in (".pyc", ".pyo"):
