@@ -36,6 +36,7 @@ class X11Embedder:
         self.hint = ""
         self._foreign = None            # Qt'de sahip pencere sarmalayicisi (referans tutulmali)
         self._key_down = False
+        self._last_active = None        # follow(): etkin pencere degisimi (editor one gelince katmani ustune al)
 
     # ---------------------------------------------------------------- Xlib yardimcilari
     def _safe(self, fn, default=None):
@@ -193,6 +194,10 @@ class X11Embedder:
         self.focus(canvas)
         return True
 
+    def _active_id(self):
+        p = self._safe(lambda: self.root.get_full_property(self.A_ACTIVE, self.X.AnyPropertyType))
+        return int(p.value[0]) if p is not None and len(p.value) else None
+
     def follow(self, canvas) -> bool:
         loc = self._locate()
         if not loc:
@@ -201,6 +206,13 @@ class X11Embedder:
             x, y, w, h = loc["canvas"]
             canvas.setGeometry(QtCore.QRect(x, y, w, h))
             self.last = loc
+        act = self._active_id()
+        if act != self._last_active:
+            self._last_active = act
+            if self.top is not None and act == self.top.id:
+                # editor yeniden one geldi (baska bir KiCad/uygulama arkasindan): bazi pencere yoneticileri transient katmani
+                # sahibiyle birlikte kaldirmaz -> 3D, editorun arkasinda kalirdi. Odak calmadan ustune al.
+                canvas.raise_()
         return True
 
     def canvas_rect(self):
