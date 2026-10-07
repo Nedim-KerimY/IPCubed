@@ -275,14 +275,41 @@ class KiCadSource:
         from kipy.proto.common.types import KiCadObjectType as K
         return self._raw_hash([K.KOT_PCB_PAD])
 
-    def geom_signature(self) -> tuple:
+    def geom_signature(self, fresh_fp: bool = False) -> tuple:
         """Bakir/maske/silk geometrisini etkileyen her seyin hash'i: iz, via, zone, pad, sekil, yazi (~150 ms, buyuk kart)."""
         from kipy.proto.common.types import KiCadObjectType as K
+        self._fp_resp = None
         groups = ([K.KOT_PCB_TRACE, K.KOT_PCB_ARC], [K.KOT_PCB_VIA], [K.KOT_PCB_ZONE], [K.KOT_PCB_PAD],
                   [K.KOT_PCB_SHAPE], [K.KOT_PCB_TEXT, K.KOT_PCB_TEXTBOX])
         # 7: footprint'ler (alanlar/yazilar ve footprint ici silk sekilleri dahil). Ust duzey KOT_PCB_SHAPE/TEXT footprint
         # cocuklarini KAPSAMAZ: referans yazisini tasimak/degistirmek ya da footprint'i tasimak yalniz burada gorunur.
-        return tuple(self._raw_hash(g) for g in groups) + (self._stackup_hash(), self._raw_hash([K.KOT_PCB_FOOTPRINT]))
+        return tuple(self._raw_hash(g) for g in groups) + (self._stackup_hash(), self._fp_raw_hash(fresh_fp))
+
+    _fp_sig = None
+    _fp_resp = None                              # son kontrolde cekilen ham footprint yaniti (yalniz o kontrolun yenilemesi icin)
+    _fp_sig_t = 0.0
+    _fp_hot_until = 0.0                          # bu ana dek footprint'ler her kontrolde cekilir (duzenleme sonrasi)
+    _fp_sig_cost = 0.0
+
+    def _fp_raw_hash(self, fresh: bool = False) -> str:
+        """Footprint hash'i, maliyetiyle orantili aralikla (en az 20x maliyeti). Buyuk kartta tum footprint'leri cekmek KiCad'in
+        UI thread'ini ~0.8 sn kilitler (57 MB); her 1.5 sn'de yapilinca hem KiCad hem 3D (pencere mesajlari) takiliyordu.
+        Arada son deger kullanilir. fresh: KiCad'de bir duzenleme/tasima az once bitti -> hemen cek ve 5 sn boyunca her kontrolde
+        cek: KiCad tasimadan hemen sonra bazen ESKI konumu dondurur, bir sonraki kontrol duzeltir (seyrek aralik beklenmez)."""
+        import time
+        from kipy.proto.common.types import KiCadObjectType as K
+        now = time.monotonic()
+        if fresh:
+            self._fp_hot_until = now + 5.0
+        if now < self._fp_hot_until or self._fp_sig is None or now - self._fp_sig_t > max(1.5, 20 * self._fp_sig_cost):
+            import hashlib
+            t0 = time.perf_counter()
+            resp = self._raw_items([K.KOT_PCB_FOOTPRINT])
+            self._fp_resp = resp                 # ayni kontroldeki refresh_partial tekrar cekmesin (buyuk kartta ~0.8 sn)
+            self._fp_sig = hashlib.blake2b(resp.SerializeToString(), digest_size=8).hexdigest()
+            self._fp_sig_cost = time.perf_counter() - t0
+            self._fp_sig_t = time.monotonic()
+        return self._fp_sig
 
     def _stackup_hash(self) -> str:
         """Kart stackup'i (kalinliklar, yuzey kaplama turu, renkler) ham hash'i: Board Setup degisince yakalanir."""
@@ -422,13 +449,15 @@ class KiCadSource:
         cd2 = dataclasses.replace(cd, net_names=names, **new)
         return dataclasses.replace(prev, copper=cd2, silk=sd, outline_lines=outline, poses=poses, stack=stack), plan
 
-    def _raw_footprints(self):
-        """-> [(kiid, hash, protobuf)] Python nesnesine cevirmeden (hash ham baytlardan)."""
+    def _raw_footprints(self, resp=None):
+        """-> [(kiid, hash, protobuf)] Python nesnesine cevirmeden (hash ham baytlardan). resp: onceden cekilmis yanit."""
         import hashlib
         from kipy.proto.board.board_types_pb2 import FootprintInstance as FpProto
         from kipy.proto.common.types import KiCadObjectType as K
         out = []
-        for it in self._raw_items([K.KOT_PCB_FOOTPRINT]).items:
+        if resp is None:
+            resp = self._raw_items([K.KOT_PCB_FOOTPRINT])
+        for it in resp.items:
             p = FpProto()
             if it.Unpack(p):
                 out.append((p.id.value, hashlib.blake2b(it.value, digest_size=8).hexdigest(), p))
@@ -445,7 +474,8 @@ class KiCadSource:
         from kipy.board_types import FootprintInstance
         from .silk import fp_silk_part
         seen, changed = set(), False
-        for k, h, p in self._raw_footprints():
+        resp, self._fp_resp = self._fp_resp, None    # geometri kontrolunun az once cektigi yanit (varsa)
+        for k, h, p in self._raw_footprints(resp):
             seen.add(k)
             if self._fp_hash.get(k) == h and k in self._fp_silk:
                 continue

@@ -96,6 +96,13 @@ def auto_workers() -> int:
     return n
 
 
+# sol alttaki "Loading ..." yazisi icin: isci islevi -> kullaniciya gorunen ad (sira = yazidaki sira)
+_JOB_KIND = {_load_worker: "3D models", _silk_worker: "silkscreen", _cu_worker: "copper", _track_worker: "copper",
+             _zone_worker: "copper", _via_worker: "copper", _extras_worker: "copper", _body_worker: "solder mask",
+             _body_tiles_cuts: "solder mask", _mask_worker: "solder mask"}
+_KIND_ORDER = ("silkscreen", "copper", "solder mask", "3D models")
+
+
 class ModelGroup:
     """Ayni model dosyasi + ayni yuz -> tek InstancedMesh."""
 
@@ -178,6 +185,7 @@ class ViewerScene:
         self._idle_since = None
         self._recoveries = 0
         self._retried: set[Path] = set()       # hata verip bir kez yeniden denenen modeller
+        self._fut_kind: dict = {}              # Future -> "silkscreen"/"copper"/... (sol alttaki yukleme yazisi)
         self.apply_settings()
 
     # ------------------------------------------------------------------ ayarlar
@@ -464,10 +472,12 @@ class ViewerScene:
             self._pool = make_pool(self._workers)
             _log(f"isci havuzu: {self._workers} isci, bos bellek {free_memory_gb() or 0:.1f} GB")
         try:
-            return self._pool.submit(fn, *args)
+            fut = self._pool.submit(fn, *args)
         except BrokenProcessPool:
             self._new_pool()
-            return self._pool.submit(fn, *args)
+            fut = self._pool.submit(fn, *args)
+        self._fut_kind[fut] = _JOB_KIND.get(fn)
+        return fut
 
     def _sub_fast(self, fn, *args):
         """Canli kucuk isler hep AYNI isciye gider: o iscinin iz kirpma / delik / kontur onbellekleri sicak kalir (~30-100 ms)."""
@@ -476,10 +486,12 @@ class ViewerScene:
             self._fast_pool = make_pool(1)
         self._fast_idle = None
         try:
-            return self._fast_pool.submit(fn, *args)
+            fut = self._fast_pool.submit(fn, *args)
         except BrokenProcessPool:
             self._fast_pool = make_pool(1)
-            return self._fast_pool.submit(fn, *args)
+            fut = self._fast_pool.submit(fn, *args)
+        self._fut_kind[fut] = _JOB_KIND.get(fn)
+        return fut
 
     def _warm_fast(self):
         """Tam derleme bitince hizli isciyi dis katman izleriyle isit (sonuc atilir): ilk canli iz duzenlemesi de hizli olsun."""
@@ -1029,6 +1041,16 @@ class ViewerScene:
                 pass
             self._pool = None
             self._idle_since = None
+
+    def loading_kinds(self) -> list[str]:
+        """Bekleyen gorunur islerin turleri (sirali). Arka plan isitma isleri (_warm_futs) sayilmaz."""
+        futs = [f for f in self.layer_futures if not f.done()] + [f for f in self.loading.values() if not f.done()]
+        if self._mask_fut is not None and not self._mask_fut.done():
+            futs.append(self._mask_fut)
+        kinds = {self._fut_kind.get(f) for f in futs} - {None}
+        if len(self._fut_kind) > 256:                  # biten islerin etiketlerini birak
+            self._fut_kind = {f: k for f, k in self._fut_kind.items() if not f.done()}
+        return [k for k in _KIND_ORDER if k in kinds]
 
     def pending(self) -> int:
         return len(self.loading) + len(self.layer_futures)

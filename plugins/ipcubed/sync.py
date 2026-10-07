@@ -38,6 +38,7 @@ class SyncThread(threading.Thread):
         prev_snap = None
         geom_ref = None
         last_chk = 0.0
+        fresh_fp = False                      # sonraki geometri kontrolu footprint'leri de hemen cekmeli mi
         backoff = 0.0                         # son yenilemenin suresine gore kontrol araligi uzar (yavas/buyuk kartlarda firtina olmasin)
         while not self._halt.is_set():
             try:
@@ -46,6 +47,8 @@ class SyncThread(threading.Thread):
                 raw = src.pads_raw_hash()
                 if self._was_busy:                   # KiCad'de etkilesimli arac (rota cizme, surukleme, diyalog) az once bitti:
                     self._was_busy = False           # degisiklik buyuk olasilikla simdi isledi -> 1.5 sn beklemeden kontrol et
+                    _log("duzenleme bitti -> hemen kontrol (footprint dahil)")
+                    fresh_fp = True                  # footprint ici yazi/alan da degismis olabilir: seyrek footprint kontrolunu bekleme
                     self.check_now.set()
                 if last is None or raw != last_raw or self.request_full.is_set():
                     sig = src.pad_signature()
@@ -54,6 +57,7 @@ class SyncThread(threading.Thread):
                     if set(sig) != set(last) or self.request_full.is_set():
                         self.request_full.clear()
                         gs = src.geom_signature()
+                        self.out.put(("fetching", True))
                         prev_snap = src.snapshot()
                         geom_ref = gs
                         self.out.put(("full", self._ship(prev_snap)))
@@ -61,6 +65,7 @@ class SyncThread(threading.Thread):
                         changed = [k for k in sig if sig[k] != last.get(k)]
                         _log(f"moved: {len(changed)} footprint")
                         self.out.put(("moved", src.footprints_by_id(changed)))
+                        fresh_fp = True                  # tasinan footprint'in yazilari: footprint kontrolu hemen ve birkac sn sik
                         self.check_now.set()             # tasima sonrasi bakir/maske/silk yenilemesi hemen baslasin (bekleme/backoff yok)
                     last = sig
                     last_raw = raw
@@ -68,10 +73,12 @@ class SyncThread(threading.Thread):
                 if prev_snap is not None and self.visible and (self.check_now.is_set() or now - last_chk > max(self.GEOM_EVERY, backoff)):
                     self.check_now.clear()
                     last_chk = now
-                    gs = src.geom_signature()
+                    gs = src.geom_signature(fresh_fp)
+                    fresh_fp = False
                     if geom_ref is not None and gs != geom_ref:
                         t0 = time.perf_counter()
                         diff = [i for i in range(len(gs)) if gs[i] != geom_ref[i]]
+                        self.out.put(("fetching", True))         # viewer: "Reading changes from KiCad"
                         # yalniz degisen kategori cekilir, yalniz etkilenen katmanlar yeniden uretilir
                         prev_snap, plan = src.refresh_partial(prev_snap, diff)
                         if plan.get("refull"):                 # stackup kalinligi degisti: modeller dahil tam yukleme

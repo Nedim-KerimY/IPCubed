@@ -92,6 +92,7 @@ class ViewerCore:
         self.hl.render(self.renderer, self.camera, w, h)
         self._update_stats(w, h)
         self._update_ex_label(w, h)
+        self._update_busy_label(w, h)
         self._draw_cube(w, h)                 # kup + performans yazisi: tek bindirme gecisi
         self._record_frame(t0)
 
@@ -634,6 +635,44 @@ class ViewerCore:
             return True
         return False
 
+    _fetching = False
+
+    def busy_text(self) -> str:
+        """Sol alt kose: degisiklik algilandiktan sonra neyin yuklendigi ('Loading silkscreen, copper')."""
+        kinds = self.vs.loading_kinds()
+        if kinds:
+            return "Loading " + ", ".join(kinds)
+        return "Reading changes from KiCad" if self._fetching else ""
+
+    def _update_busy_label(self, w, h):
+        text = getattr(self, "_busy_shown", "")
+        q = getattr(self, "_busy_quad", None)
+        if not text:
+            if q is not None:
+                q.visible = False
+            return
+        try:
+            ratio = float(self.canvas.get_pixel_ratio())
+        except Exception:  # noqa: BLE001
+            ratio = 1.0
+        if q is None:
+            import numpy as np
+            mat = gfx.MeshBasicMaterial(map=gfx.Texture(np.zeros((4, 4, 4), np.uint8), dim=2))
+            q = self._busy_quad = gfx.Mesh(gfx.plane_geometry(1, 1), mat)
+            self._busy_key = None
+            self._cube_scene.add(q)
+        if self._busy_key != (text, ratio):
+            from .exploder import label_image
+            self._busy_key = (text, ratio)
+            arr = label_image(text + " …", ratio)
+            q.material.map = gfx.Texture(arr, dim=2)
+            self._busy_size = (arr.shape[1] / ratio, arr.shape[0] / ratio)
+        lw, lh = self._busy_size
+        m = statsoverlay.MARGIN
+        q.local.scale = (lw, lh, 1)
+        q.local.position = (m + lw / 2, m + lh / 2, 0)
+        q.visible = True
+
     def _update_ex_label(self, w, h):
         """Fare altindaki katman kupunun adi (kupun solunda, ekran koordinatli)."""
         hov = self.ex.hover if self.ex.group.visible else None
@@ -699,15 +738,18 @@ class ViewerCore:
                 self.vs.update_tracks(*payload)
                 dirty = True
             elif kind == "partial":
+                self._fetching = False
                 self.vs.update_partial(*payload)
                 if payload[1].get("stack"):
                     self.vs.apply_settings()                # yeni kaplama rengi hemen
                     self.on_snapshot(payload[0])            # panel: stackup listesi + kaplama turu
                 dirty = True
             elif kind == "geom":
+                self._fetching = False
                 self.vs.update_geometry(payload)
                 dirty = True
             elif kind == "full":
+                self._fetching = False
                 if payload.name != self.board_name or not self.loaded:
                     self._framed = False             # yalniz yeni kartta kamerayi yeniden cerceve (ayni kart yenilenirse gorunum korunur)
                 self.vs.load_snapshot(payload)
@@ -715,6 +757,9 @@ class ViewerCore:
                 self.on_snapshot(payload)
                 dirty = True
                 self.status = f"{len(payload.footprints)} footprint"
+            elif kind == "fetching":
+                self._fetching = bool(payload)
+                dirty = True
             elif kind == "status":
                 self.status = payload
                 self.on_status(payload)
@@ -749,6 +794,10 @@ class ViewerCore:
             self._stats_t = time.perf_counter()
             self._stats_forced = True                      # yaziyi tazelemek icin (FPS'e sayilmaz) nadiren yeniden ciz
             dirty = True
+        bt = self.busy_text()
+        if bt != getattr(self, "_busy_shown", ""):
+            self._busy_shown = bt
+            dirty = True                                   # sol alttaki yukleme yazisi degisti
         if dirty or self._need_draw:
             self._need_draw = False
             if self.visible:

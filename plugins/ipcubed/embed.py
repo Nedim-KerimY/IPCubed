@@ -44,6 +44,9 @@ class WinEmbedder:
         self.u.SetWindowLongPtrW.restype = ctypes.c_void_p
         self.u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         self.u.SendMessageW.restype = ctypes.c_ssize_t
+        self.u.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT,
+                                               wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+        self.u.SendMessageTimeoutW.restype = ctypes.c_ssize_t
         self.top = self.canvas_hwnd = self.tab_hwnd = self.content_hwnd = None
         self.last = {}
         self.tab_widget: QtWidgets.QLabel | None = None
@@ -89,9 +92,16 @@ class WinEmbedder:
             return False
         for c in kids:
             if self._cls(c) == "_wx_SysTabCtl32":
-                if self.u.SendMessageW(c, 0x1304, 0, 0) == 3:      # TCM_GETITEMCOUNT
+                if self._send_timeout(c, 0x1304) == 3:              # TCM_GETITEMCOUNT
                     return True
         return False
+
+    def _send_timeout(self, h, msg, wp=0, lp=0, ms=50):
+        """KiCad'in pencerelerine mesaj: KiCad UI thread'i mesgulken (buyuk kartta IPC istegi) 3D cizim dongusu beklemesin."""
+        res = self.ct.c_size_t(0)
+        if not self.u.SendMessageTimeoutW(h, msg, wp, lp, 0x0002, ms, self.ct.byref(res)):     # SMTO_ABORTIFHUNG
+            return None
+        return res.value
 
     def _find_pcbnew(self):
         import psutil
@@ -164,8 +174,15 @@ class WinEmbedder:
                             self.SWP_NOZORDER | self.SWP_NOACTIVATE | self.SWP_SHOWWINDOW)
 
     # ---------------------------------------------------------------- kisayol / odak
+    def _top_ok(self) -> bool:
+        return bool(self.top and self.u.IsWindow(self.top) and self.u.IsWindowVisible(self.top) and not self.u.IsIconic(self.top))
+
     def editor_present(self) -> bool:
-        return self._find_pcbnew() is not None
+        if self._top_ok():                   # bulunan editor penceresi hala yerinde: tum pencereleri yeniden tarama
+            return True
+        self.top = self._find_pcbnew()
+        self.canvas_hwnd = self.tab_hwnd = self.content_hwnd = None
+        return self.top is not None
 
     def canvas_focused(self) -> bool:
         """PCB duzenleyicinin canvas'i klavye odaginda mi? (Metin kutularinda '3' yazarken tetiklenmesin.)"""
@@ -176,7 +193,7 @@ class WinEmbedder:
                         ("hwndCapture", wt.HWND), ("hwndMenuOwner", wt.HWND), ("hwndMoveSize", wt.HWND),
                         ("hwndCaret", wt.HWND), ("rcCaret", wt.RECT)]
 
-        top = self._find_pcbnew()
+        top = self.top if self._top_ok() else self._find_pcbnew()
         if not top:
             return False
         tid = self.u.GetWindowThreadProcessId(top, None)
