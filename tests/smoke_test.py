@@ -170,7 +170,10 @@ def run_checks():
             p.feed(line)
         assert 0.3 < p.fraction() < 0.5 and "Qt" in p.message()
         s = sd.smart_app_control_state()
-        assert (s is None) == (sys.platform != "win32")
+        if sys.platform != "win32":
+            assert s is None
+        else:                              # Windows Server / eski Windows 10: anahtar yok -> None (kapali sayilir)
+            assert s is None or s in (0, 1, 2), s
         return f"smart app control state: {s}"
 
 
