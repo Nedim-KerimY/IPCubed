@@ -78,10 +78,11 @@ class StatsOverlay:
         self._font = theme.make_font(12, mono=True)
 
     @staticmethod
-    def text(fps: float, ms: float, s: StatsSampler) -> str:
+    def text(fps: float, ms: float, s: StatsSampler, loading: int = 0) -> str:
         gpu = f"{s.gpu:.0f}%" if s.gpu is not None else "n/a"
         vram = f" {s.vram_mb / 1024:.1f}G" if s.vram_mb is not None else ""
-        fps_t = f"{fps:3.0f} FPS" if fps > 0 else "idle"
+        # "idle" = cizilen kare yok; arka planda model/katman isleri surerken bunu gostermek yaniltici (bitmis sanilir)
+        fps_t = f"load {min(loading, 99):2d}" if loading else (f"{fps:3.0f} FPS" if fps > 0 else "idle")
         return f"{fps_t} | {ms:4.1f} ms | CPU {s.cpu:4.1f}% | RAM {s.ram_mb:5.0f} MB | GPU {gpu}{vram}"
 
     def render(self, text: str, ratio: float = 1.0) -> np.ndarray:

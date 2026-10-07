@@ -148,7 +148,7 @@ class ViewerCore:
         while self._frames and now - self._frames[0] > 1.0:
             self._frames.popleft()
         fps = float(len(self._frames)) if self._frames else 0.0
-        text = self.stats.text(fps if len(self._frames) > 1 else 0.0, self._frame_ms, self._sampler)
+        text = self.stats.text(fps if len(self._frames) > 1 else 0.0, self._frame_ms, self._sampler, self.vs.pending())
         try:
             ratio = float(self.canvas.get_pixel_ratio())
         except Exception:  # noqa: BLE001

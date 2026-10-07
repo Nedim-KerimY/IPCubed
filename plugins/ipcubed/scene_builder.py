@@ -177,6 +177,7 @@ class ViewerScene:
         self._pool = None                      # isci havuzu is gelince kurulur, bosta kalinca kapatilir (RAM)
         self._idle_since = None
         self._recoveries = 0
+        self._retried: set[Path] = set()       # hata verip bir kez yeniden denenen modeller
         self.apply_settings()
 
     # ------------------------------------------------------------------ ayarlar
@@ -461,6 +462,7 @@ class ViewerScene:
         self._idle_since = None
         if self._pool is None:
             self._pool = make_pool(self._workers)
+            _log(f"isci havuzu: {self._workers} isci, bos bellek {free_memory_gb() or 0:.1f} GB")
         try:
             return self._pool.submit(fn, *args)
         except BrokenProcessPool:
@@ -506,6 +508,7 @@ class ViewerScene:
     def _recover_pool(self):
         """Isci havuzu cokerse (genelde bellek): havuzu kucultup bekleyen tum isleri yeniden gonder."""
         if self._recoveries >= 3:
+            _log("havuz kurtarma siniri asildi: bekleyen isler birakildi")
             return
         self._recoveries += 1
         self._new_pool()
@@ -977,12 +980,18 @@ class ViewerScene:
                 from concurrent.futures.process import BrokenProcessPool
                 if isinstance(e, BrokenProcessPool):
                     print("havuz coktu:", repr(e)[:200])
+                    _log(f"havuz coktu ({path.name}, {self._workers} isci, bos {free_memory_gb() or 0:.1f} GB): {e!r}"[:300])
                     self._recover_pool()
                     return True
                 print("model hatasi:", path.name, e)
+                _log(f"model hatasi: {path.name}: {type(e).__name__}: {e}"[:300])
+                if path not in self._retried:          # gecici hata (bellek vb.): bir kez daha dene, sessizce birakma
+                    self._retried.add(path)
+                    self.loading[path] = self._sub(_load_worker, str(path))
                 continue
             if res is None:
                 print("model okunamadi:", path.name)
+                _log(f"model okunamadi: {path.name}")
                 continue
             self.mesh_data[path] = MeshData(*res)
             for g in self.groups.values():
