@@ -451,6 +451,16 @@ class _Progress:
         return f"Downloading {self.name}...\n{mb:.0f} of ~{self.total / 1000 ** 2:.0f} MB"
 
 
+def _pip_version() -> tuple:
+    """Bu ortamdaki pip surumu (ornek (24, 0)); okunamazsa (0,). Linux'ta sistem Python'unun pip'i eski olabilir."""
+    try:
+        out = subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL, creationflags=0x08000000 if sys.platform == "win32" else 0).stdout
+        return tuple(int(x) for x in out.split()[1].split(".")[:2])
+    except Exception:  # noqa: BLE001
+        return (0,)
+
+
 def _kill_tree(p: subprocess.Popen):
     """pip'i durdur. Windows: sanal ortamin python.exe'si asil yorumlayiciyi ALT surec olarak baslatir -> agaci oldur."""
     if p.poll() is not None:
@@ -506,8 +516,10 @@ def install(show: bool) -> int:
             from .ctl import clean_env
             # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
             # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin. --progress-bar raw: diyalog icin.
+            bar = "raw" if _pip_version() >= (24, 1) else "off"    # raw: pip 24.1+ (eski pip "Usage" hatasiyla cikar)
+            f.write(f"pip {'.'.join(map(str, _pip_version()))}, progress {bar}\n")
             proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                                     "--only-binary", ":all:", "--ignore-installed", "--progress-bar", "raw", "-r", str(DEPS)],
+                                     "--only-binary", ":all:", "--ignore-installed", "--progress-bar", bar, "-r", str(DEPS)],
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=clean_env(),
                                     text=True, encoding="utf-8", errors="replace", bufsize=1)
             prog = _Progress(download_mb())
@@ -537,7 +549,12 @@ def install(show: bool) -> int:
     if cancelled:
         return 1                           # kullanici iptal etti: hata diyalogu yok; 3D Live yeniden sorar
     if r.returncode != 0:
-        info(f"Downloading IPCubed components failed.\n\nDetails: {log}\n\n"
+        try:                               # pip'in kendi hata satiri (internet, disk, engellenen dosya...): kullanici neyin bozuldugunu gorsun
+            errs = [l.strip() for l in log.read_text(encoding="utf-8", errors="replace").splitlines() if l.startswith("ERROR")]
+        except OSError:
+            errs = []
+        why = f"{errs[-1][:400]}\n\n" if errs else ""
+        info(f"Downloading IPCubed components failed.\n\n{why}Details: {log}\n\n"
              "Check your internet connection, then press 3D Live again to retry.", error=True)
         return r.returncode
     from .ctl import launch, send
