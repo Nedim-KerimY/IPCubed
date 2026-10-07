@@ -16,7 +16,7 @@ DEPS = ROOT / "plugins" / "ipcubed" / "deps.txt"
 OUT = ROOT / "plugins" / "ipcubed" / "dep_sizes.json"
 TARGETS = {                                    # key -> (pip --platform tags, python version)
     "win32": (["win_amd64"], "3.11"),
-    "linux": (["manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux1_x86_64"], "3.12"),
+    "linux": (["manylinux_2_34_x86_64", "manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux1_x86_64"], "3.12"),
     "darwin": (["macosx_14_0_arm64", "macosx_11_0_arm64", "macosx_11_0_universal2"], "3.11"),
 }
 

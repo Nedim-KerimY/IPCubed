@@ -242,8 +242,121 @@ def _ask_and_install(show: bool) -> bool:
                "This is needed only once. The 3D view opens automatically when it is done."):
         _drop_lock()
         return False
+    if not preflight(mb):
+        _drop_lock()
+        return False
     _set_lock("install", _spawn_installer(show))       # kilit el degistirir: arada bosluk yok
     return False
+
+
+# ------------------------------------------------------------------------------ indirmeden once: bu bilgisayarda calisir mi?
+MAX_REL_PATH = 155      # bilesenlerdeki en uzun dosya yolu (site-packages a gore; PySide6 qml: 151), CI testi dogrular
+MIN_PYTHON = (3, 11)    # numpy 2.4 / cadquery-ocp-novtk 8: cp311+ wheel'leri
+
+
+def smart_app_control_state() -> int | None:
+    """Windows Akilli Uygulama Denetimi: 0 kapali, 1 ACIK (imzasiz DLL'leri engeller), 2 degerlendirme; Windows degilse None.
+    IPCUBED_FAKE_SAC=1: diyalogu denemek icin acik varsay."""
+    if os.environ.get("IPCUBED_FAKE_SAC"):
+        return int(os.environ["IPCUBED_FAKE_SAC"])
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\CI\Policy") as k:
+            return int(winreg.QueryValueEx(k, "VerifiedAndReputablePolicyState")[0])
+    except OSError:
+        return None
+
+
+SAC_TEXT = ("Windows Smart App Control is turned ON on this PC.\n\n"
+            "It blocks IPCubed's open-source components (Qt, OpenCascade, wgpu...) because they are not code-signed, "
+            "so the 3D view would not start.\n\n"
+            "Please turn it off:\nWindows Security > App & browser control > Smart App Control settings > Off\n\n"
+            "Note: Windows may not let you turn Smart App Control back on without resetting Windows. "
+            "On a company-managed PC, ask your IT administrator instead.\n\n"
+            "Click \"I disabled it\" when you are done.")
+
+
+def _sac_choice(text: str) -> str:
+    """-> 'done' | 'open' | 'cancel'. wx (KiCad'in Python'unda hazir) ile ozel dugme adlari; yoksa standart Windows kutusu."""
+    try:
+        import wx
+        app = wx.App(False) if not wx.App.Get() else None  # noqa: F841
+        dlg = wx.MessageDialog(None, text, TITLE, wx.YES_NO | wx.CANCEL | wx.ICON_WARNING | wx.STAY_ON_TOP)
+        dlg.SetYesNoCancelLabels("I disabled it", "Open Windows Security", "Cancel")
+        r = dlg.ShowModal()
+        dlg.Destroy()
+        return {wx.ID_YES: "done", wx.ID_NO: "open"}.get(r, "cancel")
+    except Exception:  # noqa: BLE001
+        pass
+    import ctypes
+    MB_YESNOCANCEL, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST = 0x3, 0x30, 0x10000, 0x40000
+    r = ctypes.windll.user32.MessageBoxW(None, text + "\n\n(Yes = I disabled it, No = open Windows Security)", TITLE,
+                                         MB_YESNOCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST)
+    return {6: "done", 7: "open"}.get(r, "cancel")
+
+
+def _sac_gate() -> bool:
+    """Akilli Uygulama Denetimi aciksa kullanicidan kapatmasini iste. Kapatildi (ya da hic acik degil) -> True, iptal -> False."""
+    fake = bool(os.environ.get("IPCUBED_FAKE_SAC"))
+    text = SAC_TEXT
+    while smart_app_control_state() == 1:
+        c = _sac_choice(text)
+        if c == "cancel":
+            return False
+        if c == "open":
+            try:
+                os.startfile("windowsdefender://appbrowser")      # Windows Guvenligi > Uygulama ve tarayici denetimi
+            except OSError:
+                pass
+            continue
+        if fake:
+            return True
+        text = "Smart App Control still appears to be ON.\n\n" + SAC_TEXT     # kapatmadan "kapattim" denirse
+    return True
+
+
+def preflight(mb: int | None) -> bool:
+    """Indirmeden once bilinen engeller: Python surumu, Akilli Uygulama Denetimi, disk alani, Windows yol uzunlugu siniri."""
+    if sys.version_info < MIN_PYTHON:
+        info(f"IPCubed needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer, but this KiCad uses Python "
+             f"{sys.version_info[0]}.{sys.version_info[1]} ({sys.executable}).\n\n"
+             "On Linux, KiCad uses the system Python: Ubuntu 22.04 has 3.10. Ubuntu 24.04, Debian 12+ and current Fedora "
+             "work.", error=True)
+        return False
+    if not _sac_gate():
+        return False
+    import shutil
+    need = max(1.5, 3.5 * (mb or 200) / 1000)            # GB: indirme + acilmis paketler (~3x) + pip gecici dosyalari
+    try:
+        free = shutil.disk_usage(sys.prefix).free / 1e9
+    except OSError:
+        free = need
+    if free < need:
+        info(f"There is not enough free disk space for IPCubed's components.\n\n"
+             f"Needed: about {need:.1f} GB, free: {free:.1f} GB on the drive of\n{sys.prefix}\n\n"
+             "Free up some space, then press 3D Live again.", error=True)
+        return False
+    if sys.platform == "win32" and len(str(Path(sys.prefix) / "Lib" / "site-packages")) + 1 + MAX_REL_PATH > 259 \
+            and not _long_paths_enabled():
+        info("The folder KiCad uses for plugin components has a very long path, and Windows long path support is off, "
+             "so some component files could not be written.\n\n"
+             f"Folder: {sys.prefix}\n\n"
+             "Turn on long paths (as administrator, in PowerShell):\n"
+             "New-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem -Name LongPathsEnabled "
+             "-Value 1 -PropertyType DWORD -Force\n\nthen restart Windows and press 3D Live again.", error=True)
+        return False
+    return True
+
+
+def _long_paths_enabled() -> bool:
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as k:
+            return bool(winreg.QueryValueEx(k, "LongPathsEnabled")[0])
+    except OSError:
+        return False
 
 
 def _spawn_installer(show: bool) -> int:

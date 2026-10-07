@@ -9,7 +9,38 @@ permissions:
   contents: write
 
 jobs:
+  # A fresh install must work for every user before anything is published: Windows with KiCad's Python (3.11),
+  # Linux with the system Pythons KiCad 10 uses (Ubuntu 24.04: 3.12, Debian 13 / Fedora: 3.13+).
+  smoke-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, python: "3.11" }
+          - { os: ubuntu-24.04, python: "3.11" }
+          - { os: ubuntu-24.04, python: "3.12" }
+          - { os: ubuntu-24.04, python: "3.13" }
+          - { os: ubuntu-24.04, python: "3.14" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Linux libraries (Qt offscreen, software Vulkan for wgpu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 mesa-vulkan-drivers
+      - name: Fresh environment, install with the plugin's installer, run checks
+        shell: bash
+        run: |
+          python -m venv fresh
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=fresh/Scripts/python.exe; else PY=fresh/bin/python; fi
+          $PY tests/smoke_test.py
+
   package:
+    needs: smoke-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
