@@ -242,22 +242,71 @@ def _ask_and_install(show: bool) -> bool:
                "This is needed only once. The 3D view opens automatically when it is done."):
         _drop_lock()
         return False
-    _set_lock("install", _spawn_installer(show))       # kilit el degistirir: arada bosluk yok
+    _wait_installer(_spawn_installer(show))           # kilit el degistirir: arada bosluk yok
     return False
 
 
+_PASS_ENV = ("KICAD_API_SOCKET", "KICAD_API_TOKEN", "IPCUBED_KICAD_PID", "IPCUBED_DEBUG")
+
+
+def _terminal(argv: list[str], title: str):
+    """Linux: ilerlemeyi gosterecek bir terminal penceresi komutu (yoksa None: arka planda kurulur)."""
+    from shutil import which
+    for name, mk in (("gnome-terminal", lambda: ["gnome-terminal", f"--title={title}", "--"] + argv),
+                     ("konsole", lambda: ["konsole", "-p", f"tabtitle={title}", "-e"] + argv),
+                     ("xfce4-terminal", lambda: ["xfce4-terminal", f"--title={title}", "-x"] + argv),
+                     ("mate-terminal", lambda: ["mate-terminal", f"--title={title}", "-x"] + argv),
+                     ("kitty", lambda: ["kitty", "--title", title] + argv),
+                     ("alacritty", lambda: ["alacritty", "--title", title, "-e"] + argv),
+                     ("x-terminal-emulator", lambda: ["x-terminal-emulator", "-T", title, "-e"] + argv),
+                     ("xterm", lambda: ["xterm", "-T", title, "-geometry", "110x30", "-e"] + argv)):
+        if which(name):
+            return mk()
+    return None
+
+
 def _spawn_installer(show: bool) -> int:
-    cmd = [sys.executable, "-m", "ipcubed.setup_deps", "--install"] + (["--show"] if show else [])
+    """Kurucuyu baslat. Windows: kendi cmd penceresinde, Linux: bulunabilen bir terminalde -> pip ilerlemesi gorunur.
+    Pencere yoksa arka planda (eski davranis). Gerekli ortam degerleri komut satirindan da gecer (terminal sunuculari
+    ortami aktarmayabilir)."""
     from .ctl import clean_env
-    kw: dict = {"cwd": str(HERE.parent), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
-                "env": clean_env()}
+    py = Path(sys.executable)
+    if sys.platform == "win32" and py.name.lower() == "pythonw.exe" and py.with_name("python.exe").exists():
+        py = py.with_name("python.exe")                      # konsol penceresi icin konsollu yorumlayici
+    argv = [str(py), "-m", "ipcubed.setup_deps", "--install"] + (["--show"] if show else [])
+    for k in _PASS_ENV:
+        if os.environ.get(k):
+            argv += ["--set", f"{k}={os.environ[k]}"]
+    env = clean_env()
     if sys.platform == "win32":
-        flags = 0x00000008 | 0x00000200 | 0x08000000           # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
+        kw: dict = {"cwd": str(HERE.parent), "env": env}
+        flags = 0x00000010 | 0x00000200                      # CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP
         try:
-            return subprocess.Popen(cmd, creationflags=flags | 0x01000000, **kw).pid     # BREAKAWAY_FROM_JOB: KiCad'in is nesnesinden cik
+            return subprocess.Popen(argv + ["--console"], creationflags=flags | 0x01000000, **kw).pid   # BREAKAWAY_FROM_JOB
         except OSError:
-            return subprocess.Popen(cmd, creationflags=flags, **kw).pid
-    return subprocess.Popen(cmd, start_new_session=True, **kw).pid
+            return subprocess.Popen(argv + ["--console"], creationflags=flags, **kw).pid
+    quiet: dict = {"cwd": str(HERE.parent), "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                   "stderr": subprocess.DEVNULL, "start_new_session": True}
+    term = _terminal(argv + ["--console"], "IPCubed: downloading components") if os.environ.get("DISPLAY") or \
+        os.environ.get("WAYLAND_DISPLAY") else None
+    if term:
+        try:
+            return subprocess.Popen(term, **quiet).pid
+        except OSError:
+            pass
+    return subprocess.Popen(argv, **quiet).pid
+
+
+def _wait_installer(pid: int, timeout: float = 20.0):
+    """Kurucu kilidi kendisi alana kadar 'dialog' kilidini tut: terminal istemcisi hemen cikabilir, arada ikinci bir 3D Live
+    tiklamasi yeni bir diyalog acmasin. Kurucu baslamadiysa kilidi baslatilan surece devret."""
+    t_end = time.monotonic() + timeout
+    while time.monotonic() < t_end:
+        cur = _read_lock()
+        if cur is not None and cur[0] == "install":
+            return
+        time.sleep(0.25)
+    _set_lock("install", pid)
 
 
 def _kicad_running() -> bool:
@@ -279,38 +328,74 @@ def _kicad_running() -> bool:
     return False
 
 
-def install(show: bool) -> int:
-    """Arka plan kurucusu: pip ile deps.txt'yi bu sanal ortama kur; basarida isaret dosyasi + 3D'yi ac, hatada diyalog."""
+def _console_title(t: str):
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleTitleW(t)
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        sys.stdout.write(f"\033]0;{t}\007")
+
+
+def install(show: bool, console: bool = False) -> int:
+    """Kurucu: pip ile deps.txt'yi bu sanal ortama kur; basarida isaret dosyasi + 3D'yi ac, hatada diyalog.
+    console: kendi penceresinde calisiyor -> pip ilerlemesi gorunur, ayni cikti --log ile install.log'a da yazilir."""
     _set_lock("install", os.getpid())
     log = log_path()
+    from .ctl import clean_env
+    # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
+    # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin
+    pip = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "--only-binary", ":all:",
+           "--ignore-installed", "-r", str(DEPS)]
     try:
         with open(log, "w", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} IPCubed components -> {sys.prefix}\n")
-            f.flush()
-            from .ctl import clean_env
-            # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
-            # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin
-            r = subprocess.run([sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                                "--only-binary", ":all:", "--ignore-installed", "--progress-bar", "off", "-r", str(DEPS)],
-                               stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=clean_env())
+        if console:
+            _console_title("IPCubed: downloading components")
+            mb = download_mb()
+            print("IPCubed is downloading its components" + (f" (about {mb} MB)" if mb else "") + ".")
+            print("This window closes by itself when it is done, and the 3D view opens.\n", flush=True)
+            r = subprocess.run(pip + ["--log", str(log)], env=clean_env())
+        else:
+            with open(log, "a", encoding="utf-8") as f:
+                r = subprocess.run(pip + ["--progress-bar", "off"], stdout=f, stderr=subprocess.STDOUT,
+                                   stdin=subprocess.DEVNULL, env=clean_env())
+        with open(log, "a", encoding="utf-8") as f:
             f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {r.returncode}\n")
         if r.returncode == 0:
             _marker().write_text(json.dumps({"deps": _deps_hash(), "time": time.time()}))
     finally:
         _drop_lock()                       # diyalogdan ONCE: hata mesaji acikken 3D Live yeniden denesin
     if r.returncode != 0:
+        if console:
+            print("\nDownloading failed. Details:", log, flush=True)
         info(f"Downloading IPCubed components failed.\n\nDetails: {log}\n\n"
              "Check your internet connection, then press 3D Live again to retry.", error=True)
         return r.returncode
     from .ctl import launch, send
     if not _kicad_running():                # indirme surerken KiCad kapatildi: sahipsiz viewer baslatma (sonraki 3D Live acar)
+        if console:
+            print("\nDone. KiCad was closed: press 3D Live next time to open the 3D view.", flush=True)
+            time.sleep(4)
         return 0
+    if console:
+        print("\nDone. Opening the 3D view...", flush=True)
     if not send("ping", timeout=0.5):
         launch(*(["--show"] if show else []))
+    if console:
+        time.sleep(1.5)
     return 0
 
 
 if __name__ == "__main__":
     if "--install" in sys.argv:
-        raise SystemExit(install("--show" in sys.argv))
+        args = sys.argv[1:]
+        for i, a in enumerate(args):                   # --set KEY=VALUE: terminal penceresine aktarilmayan ortam degerleri
+            if a == "--set" and i + 1 < len(args) and "=" in args[i + 1]:
+                k, v = args[i + 1].split("=", 1)
+                if k in _PASS_ENV:
+                    os.environ[k] = v
+        raise SystemExit(install("--show" in args, console="--console" in args))
     print("ready" if ready() else "missing", download_mb(), "MB")
