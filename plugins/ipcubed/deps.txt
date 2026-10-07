@@ -1,0 +1,15 @@
+# IPCubed components. KiCad does NOT install these: the 3D Live button asks the user first (ipcubed/setup_deps.py).
+# After editing, run tools/dep_sizes.py so the dialog shows the right download size.
+kicad-python>=0.8.0
+pygfx>=0.17
+wgpu>=0.32
+rendercanvas>=2.7
+PySide6-Essentials>=6.8
+numpy
+shapely>=2.1
+mapbox_earcut
+cadquery-ocp-novtk
+matplotlib
+psutil
+zstandard
+python-xlib; sys_platform == "linux"

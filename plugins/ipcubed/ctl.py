@@ -34,20 +34,54 @@ def send(cmd: str, timeout: float = 2.0) -> bool:
         return False
 
 
-def launch(*args: str) -> None:
+def launch(*args: str, check: bool = True) -> None:
+    """Viewer'i arka planda baslat. check: ilk saniyelerde coker ise (eksik sistem kutuphanesi vb.) kullaniciya nedenini goster."""
     py = Path(sys.executable)
     if sys.platform == "win32" and py.with_name("pythonw.exe").exists():
         py = py.with_name("pythonw.exe")          # konsol penceresi acilmasin
-    kw: dict = {"cwd": str(Path(__file__).resolve().parents[1]), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL}
+    cfg = config_dir()
+    cfg.mkdir(parents=True, exist_ok=True)
+    log = cfg / "viewer.log"
+    err = open(log, "w", encoding="utf-8", errors="replace")
+    kw: dict = {"cwd": str(Path(__file__).resolve().parents[1]), "stdin": subprocess.DEVNULL, "stdout": err, "stderr": err}
     cmd = [str(py), "-m", "ipcubed", *args]
     if sys.platform == "win32":
         try:
-            subprocess.Popen(cmd, creationflags=0x00000008 | 0x00000200 | 0x01000000, **kw)     # DETACHED | NEW_PROCESS_GROUP | BREAKAWAY_FROM_JOB
+            p = subprocess.Popen(cmd, creationflags=0x00000008 | 0x00000200 | 0x01000000, **kw)     # DETACHED | NEW_PROCESS_GROUP | BREAKAWAY_FROM_JOB
         except OSError:
-            subprocess.Popen(cmd, creationflags=0x00000008 | 0x00000200, **kw)                # breakaway izni yoksa
+            p = subprocess.Popen(cmd, creationflags=0x00000008 | 0x00000200, **kw)                # breakaway izni yoksa
     else:
-        subprocess.Popen(cmd, start_new_session=True, **kw)
+        p = subprocess.Popen(cmd, start_new_session=True, **kw)
+    err.close()
+    if check:
+        _check_started(p, log)
+
+
+def _check_started(p, log: Path, timeout: float = 30.0) -> None:
+    """Viewer kontrol sunucusunu acana kadar bekle; once kapanirsa hata diyalogu."""
+    import time
+    t_end = time.monotonic() + timeout
+    while time.monotonic() < t_end:
+        if p.poll() is not None:
+            break
+        if send("ping", timeout=0.3):
+            return
+        time.sleep(0.5)
+    if p.poll() in (None, 0):              # hala aciliyor (yavas disk) ya da zaten calisan kopyaya devretti
+        return
+    try:
+        tail = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-6:]
+    except OSError:
+        tail = []
+    text = "\n".join(tail)
+    hint = ""
+    if 'platform plugin "xcb"' in text or "xcb-cursor" in text:
+        hint = ("Qt is missing X11 system libraries. Install them, then press 3D Live again:\n"
+                "    sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 "
+                "libxcb-render-util0 libxcb-image0 libxcb-randr0 libxcb-shape0\n"
+                "    (Fedora: sudo dnf install xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11)\n\n")
+    from .setup_deps import info
+    info(f"The IPCubed 3D viewer could not start.\n\n{hint}Details ({log}):\n{text[-1500:]}", error=True)
 
 
 def main(cmd: str = "toggle") -> int:
@@ -55,8 +89,12 @@ def main(cmd: str = "toggle") -> int:
         return 0
     if cmd == "quit":
         return 0
+    show = cmd in ("toggle", "show")
+    from .setup_deps import ensure
+    if not ensure(show):                # bilesenler yok: kullaniciya sorulur, onaylanirsa kurulum bitince 3D kendisi acilir
+        return 0
     # calismiyor: baslat; 3D veri yuklenince kendisi acilir (ilk aciliste kutuphaneleri yuklemek uzun surebilir, bekleme yok)
-    launch(*(["--show"] if cmd in ("toggle", "show") else []))
+    launch(*(["--show"] if show else []))
     return 0
 
 

@@ -42,9 +42,15 @@ This `kicad-plugin` branch contains only what KiCad needs to install and run the
 1. **Preferences → Preferences → Plugins → Enable KiCad API** (tick it, then restart KiCad if asked).
 2. Open a board in the PCB editor. A **3D Live** button (cube icon) appears in the top toolbar.
    If it doesn't, check *Preferences → Plugins* and make sure the IPCubed action is enabled.
-3. Click **3D Live**. On the very first click KiCad creates a Python environment for the plugin and downloads its
-   dependencies (PySide6, pygfx, OpenCascade, about 1 GB). **This can take several minutes.** Wait until it finishes, then
-   click the button again.
+3. Click **3D Live**. IPCubed asks to download its components once (Qt, OpenCascade, wgpu):
+
+   | | Download |
+   |---|---|
+   | Windows | about 162 MB |
+   | Linux | about 214 MB |
+   | macOS | about 202 MB |
+
+   Click **Download**. The download runs in the background and the 3D view opens automatically when it is done.
 
 ## Use
 
@@ -68,8 +74,13 @@ You can delete them to reset the plugin.
 
 ## Troubleshooting
 
-* **Nothing happens when I click the button:** the first click only installs dependencies. Wait a few minutes and click again.
-  KiCad shows plugin environment errors in *Preferences → Plugins*.
+* **Nothing happens when I click the button:** the components may still be downloading. Clicking again tells you, and the
+  download log is `install.log` in the settings folder below. If the download failed, clicking again retries it.
+* **Linux: "The IPCubed 3D viewer could not start" / Qt "xcb" platform plugin error:** Qt 6 needs some X11 libraries
+  that minimal installs lack. Install them and press 3D Live again:
+  `sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 libxcb-render-util0 libxcb-image0 libxcb-randr0 libxcb-shape0`
+  (Fedora: `sudo dnf install xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11`). The viewer log is
+  `viewer.log` in the settings folder.
 * **Linux, native Wayland:** a window cannot be placed over another window there, so the 3D view opens in its own window.
   To get the overlay, start KiCad on XWayland: `GDK_BACKEND=x11 kicad`.
 * **Debug log:** set the environment variable `IPCUBED_DEBUG=1` before starting KiCad. The log is written to
@@ -77,7 +88,10 @@ You can delete them to reset the plugin.
 
 ## For maintainers
 
-* `plugins/` is the plugin as KiCad loads it (`plugin.json`, `toggle.py`, `requirements.txt`, the `ipcubed` package).
+* `plugins/` is the plugin as KiCad loads it (`plugin.json`, `toggle.py`, the `ipcubed` package).
+  `plugins/requirements.txt` stays empty on purpose: KiCad installs it without asking. The real dependency list is
+  `plugins/ipcubed/deps.txt`, installed by `ipcubed/setup_deps.py` after the user confirms. After changing it, run
+  `python tools/dep_sizes.py` to refresh the sizes shown in the dialog (`dep_sizes.json`).
 * `metadata.json` + `resources/icon.png` make up the Plugin and Content Manager package.
 * `python tools/build_pcm_zip.py` builds `dist/IPCubed-<version>-pcm.zip`. The *Package KiCad plugin* GitHub Actions
   workflow runs it on every push to this branch and publishes the zip as the `v<version>` pre-release.

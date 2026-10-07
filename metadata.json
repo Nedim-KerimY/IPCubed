@@ -2,7 +2,7 @@
   "$schema": "https://go.kicad.org/pcm/schemas/v1",
   "name": "IPCubed 3D Live",
   "description": "Live, full-stackup 3D view on top of the KiCad PCB editor.",
-  "description_full": "IPCubed reads the open board over the KiCad IPC API and shows a live 3D view (copper, dielectric, solder mask, silkscreen, STEP/WRL models, ViewCube) overlaid on the PCB editor. Click the '3D Live' toolbar button once, then press 3 in the PCB canvas to toggle.\n\nBETA: use at your own risk. On first use KiCad downloads the Python dependencies (PySide6, pygfx, OpenCascade...), which can take several minutes.\n\nRequires the KiCad API: Preferences > Plugins > Enable KiCad API.",
+  "description_full": "IPCubed reads the open board over the KiCad IPC API and shows a live 3D view (copper, dielectric, solder mask, silkscreen, STEP/WRL models, ViewCube) overlaid on the PCB editor. Click the '3D Live' toolbar button once, then press 3 in the PCB canvas to toggle.\n\nBETA: use at your own risk. On the first click IPCubed asks to download its components (Qt, OpenCascade, wgpu: about 160-215 MB, once).\n\nRequires the KiCad API: Preferences > Plugins > Enable KiCad API.",
   "identifier": "io.github.ipcubed",
   "type": "plugin",
   "author": {
@@ -17,11 +17,14 @@
   },
   "versions": [
     {
-      "version": "0.1.0",
+      "version": "0.2.0",
       "status": "testing",
       "kicad_version": "10.0",
       "runtime": "ipc",
-      "platforms": ["windows", "linux"]
+      "platforms": [
+        "windows",
+        "linux"
+      ]
     }
   ]
 }
