@@ -86,6 +86,15 @@ You can delete them to reset the plugin.
   restart KiCad. KiCad shows no warning in this case. (While a large board is still loading, the button is greyed out.)
 * **Nothing happens when I click the button:** the components may still be downloading. Clicking again tells you, and the
   download log is `install.log` in the settings folder below. If the download failed, clicking again retries it.
+* **Windows: "DLL load failed ... An Application Control policy has blocked this file"** (Turkish: *Uygulama Denetimi
+  ilkesi bu dosyayı engelledi*): Windows **Smart App Control** (or a company application control policy) blocks libraries
+  without a code signature, and IPCubed's open-source components (shapely/GEOS, OpenCascade, wgpu) are not signed.
+  IPCubed cannot run while it is enforcing. To use it: *Windows Security → App & browser control → Smart App Control
+  settings → Off*. Windows may not let you turn it back on without resetting Windows, so decide with that in mind. On a
+  company-managed PC, ask your IT administrator.
+* **"The archive does not contain a valid metadata.json file"** when installing: you picked the wrong zip, usually GitHub's
+  green *Code → Download ZIP*, which wraps everything in one folder. Use `IPCubed-<version>-pcm.zip` from **Releases**, and
+  select it without unzipping it first.
 * **Linux: "The IPCubed 3D viewer could not start" / Qt "xcb" platform plugin error:** Qt 6 needs some X11 libraries
   that minimal installs lack. Install them and press 3D Live again:
   `sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 libxcb-render-util0 libxcb-image0 libxcb-randr0 libxcb-shape0`

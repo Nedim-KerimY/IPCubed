@@ -65,6 +65,7 @@ _LEAKY_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "MA
 def clean_env() -> dict:
     env = {k: v for k, v in os.environ.items() if k not in _LEAKY_ENV}
     env["PYTHONNOUSERSITE"] = "1"                 # ~/.local site-packages da karismasin
+    env["PYTHONIOENCODING"] = "utf-8"             # viewer.log hep UTF-8 (Windows'ta yerel kod sayfasi hata metnini bozuyordu)
     return env
 
 
@@ -110,13 +111,48 @@ def _check_started(p, log: Path, timeout: float = 30.0) -> None:
         tail = []
     text = "\n".join(tail)
     hint = ""
-    if 'platform plugin "xcb"' in text or "xcb-cursor" in text:
+    blocked = _app_control_block(text)
+    if blocked:
+        hint = ("Windows blocked one of IPCubed's components (" + blocked + ").\n"
+                "Smart App Control (or your organization's application control policy) only lets signed or well-known "
+                "programs load, and IPCubed's open-source libraries are not code-signed.\n\n"
+                "To use IPCubed, turn Smart App Control off: Windows Security > App & browser control > "
+                "Smart App Control settings > Off, then press 3D Live again.\n"
+                "Note: Windows may not let you turn Smart App Control back on without resetting Windows. "
+                "On a company-managed PC, ask your IT administrator instead.\n\n")
+    elif 'platform plugin "xcb"' in text or "xcb-cursor" in text:
         hint = ("Qt is missing X11 system libraries. Install them, then press 3D Live again:\n"
                 "    sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 "
                 "libxcb-render-util0 libxcb-image0 libxcb-randr0 libxcb-shape0\n"
                 "    (Fedora: sudo dnf install xcb-util-cursor xcb-util-wm xcb-util-keysyms libxkbcommon-x11)\n\n")
     from .setup_deps import info
     info(f"The IPCubed 3D viewer could not start.\n\n{hint}Details ({log}):\n{text[-1500:]}", error=True)
+
+
+def _app_control_block(text: str) -> str:
+    """Windows Akilli Uygulama Denetimi / WDAC bir DLL'i engellediyse engellenen modulun adi, yoksa ''.
+    Hata metni Windows dilinde gelir: mesaj, sistemin kendi metniyle (FormatMessage) karsilastirilir."""
+    if "DLL load failed" not in text and "WinError 4551" not in text:
+        return ""
+    msgs = ["Application Control policy has blocked this file", "Smart App Control", "WinError 4551"]
+    if sys.platform == "win32":
+        import ctypes
+        for code in (4551, 4556):              # ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION (+ yeni Windows'taki esdegeri)
+            try:
+                m = ctypes.FormatError(code).strip().rstrip(".")
+            except Exception:  # noqa: BLE001
+                continue
+            if m and "Unknown error" not in m:
+                msgs.append(m)
+    import re
+
+    def norm(t):                           # kod sayfasi bozulmalarina dayanikli: yalniz ASCII harf/rakam
+        return re.sub(r"[^a-z0-9]", "", t.lower())
+    flat = norm(text)
+    if not any(norm(m) and norm(m) in flat for m in msgs):
+        return ""
+    mod = re.search(r"DLL load failed while importing (\w+)", text)
+    return mod.group(1) if mod else "a native library"
 
 
 def main(cmd: str = "toggle") -> int:

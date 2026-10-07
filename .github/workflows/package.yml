@@ -21,6 +21,10 @@ jobs:
         run: |
           python tools/build_pcm_zip.py dist
           echo "version=$(python -c "import json;print(json.load(open('metadata.json'))['versions'][0]['version'])")" >> "$GITHUB_OUTPUT"
+      - name: Validate package (KiCad's official schemas, archive layout)
+        run: |
+          python -m pip install --quiet jsonschema
+          python tools/validate_package.py dist/*.zip
       - uses: actions/upload-artifact@v4
         with:
           name: IPCubed-pcm
