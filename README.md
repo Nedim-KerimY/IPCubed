@@ -68,12 +68,22 @@ Edits you make in KiCad (moving footprints, tracks, zones, silkscreen, ...) appe
 
 * Plugin and Content Manager: install the new zip over the old one, or use *Uninstall* there.
 * Manual install: replace or delete the `ipcubed` folder in the plugin directory.
+* Uninstalling does **not** delete the downloaded components (about 0.8 GB). KiCad keeps the plugin's Python environment;
+  delete it by hand to free the space:
+
+  | OS | Python environment (typical location; KiCad's cache folder) |
+  |---|---|
+  | Windows | `%LOCALAPPDATA%\KiCad\10.0\python-environments\io.github.ipcubed` |
+  | Linux | `~/.cache/kicad/10.0/python-environments/io.github.ipcubed` |
+  | macOS | `~/Library/Caches/kicad/10.0/python-environments/io.github.ipcubed` |
 
 Settings and caches live in `%LOCALAPPDATA%\ipcubed` (Windows), `~/.config/ipcubed` and `~/.cache/ipcubed` (Linux).
 You can delete them to reset the plugin.
 
 ## Troubleshooting
 
+* **There is no 3D Live button:** the KiCad API is off. *Preferences → Preferences → Plugins → Enable KiCad API*, then
+  restart KiCad. KiCad shows no warning in this case. (While a large board is still loading, the button is greyed out.)
 * **Nothing happens when I click the button:** the components may still be downloading. Clicking again tells you, and the
   download log is `install.log` in the settings folder below. If the download failed, clicking again retries it.
 * **Linux: "The IPCubed 3D viewer could not start" / Qt "xcb" platform plugin error:** Qt 6 needs some X11 libraries

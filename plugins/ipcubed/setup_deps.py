@@ -29,7 +29,47 @@ def _marker() -> Path:
 
 
 def _lock() -> Path:
-    return Path(sys.prefix) / "ipcubed-installing.lock"
+    """Tek kilit, iki asama: 'dialog:<pid>' (onay diyalogu acik) ve 'install:<pid>' (indirme suruyor)."""
+    return Path(sys.prefix) / "ipcubed-setup.lock"
+
+
+def _read_lock():
+    try:
+        kind, pid = _lock().read_text().strip().split(":")
+        return kind, int(pid)
+    except (OSError, ValueError):
+        return None
+
+
+def _take_lock(kind: str) -> bool:
+    """Atomik al (O_EXCL): ayni anda iki 3D Live tiklamasi iki diyalog / iki pip kurulumu acmasin. Olu surecin kilidi silinir."""
+    for _ in range(2):
+        try:
+            fd = os.open(_lock(), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            cur = _read_lock()
+            if cur is not None and _pid_alive(cur[1]):
+                return False
+            try:
+                _lock().unlink()
+            except OSError:
+                pass
+            continue
+        with os.fdopen(fd, "w") as f:
+            f.write(f"{kind}:{os.getpid()}")
+        return True
+    return False
+
+
+def _set_lock(kind: str, pid: int):
+    _lock().write_text(f"{kind}:{pid}")
+
+
+def _drop_lock():
+    try:
+        _lock().unlink()
+    except OSError:
+        pass
 
 
 def log_path() -> Path:
@@ -62,30 +102,51 @@ def download_mb() -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Kilidi tutan surec hala bizim (Python) surecimiz mi? Zombi = olu; PID baska programa verildiyse = olu."""
+    if pid <= 0:
+        return False
     if sys.platform == "win32":
         import ctypes
-        h = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)         # SYNCHRONIZE
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x00100000 | 0x1000, False, pid)        # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
         if not h:
             return False
         try:
-            return ctypes.windll.kernel32.WaitForSingleObject(h, 0) == 0x102    # WAIT_TIMEOUT: hala calisiyor
+            if k32.WaitForSingleObject(h, 0) != 0x102:              # WAIT_TIMEOUT degil: sonlanmis
+                return False
+            buf = ctypes.create_unicode_buffer(1024)
+            n = wintypes.DWORD(len(buf))
+            if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
+                return "python" in buf.value.lower()
+            return True
         finally:
-            ctypes.windll.kernel32.CloseHandle(h)
-    try:
-        os.kill(pid, 0)
+            k32.CloseHandle(h)
+    proc = Path(f"/proc/{pid}")
+    if proc.exists():                                               # Linux
+        try:
+            stat = (proc / "stat").read_text()
+            if stat[stat.rindex(")") + 2] in "ZX":                  # zombi / olu
+                return False
+            return b"python" in (proc / "cmdline").read_bytes().lower()
+        except (OSError, ValueError, IndexError):
+            return False
+    try:                                                            # macOS / diger POSIX
+        out = subprocess.run(["ps", "-o", "stat=,command=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    except OSError:
+        out = ""
+    if not out:
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return False
         return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    return not out.startswith("Z") and "python" in out.lower()
 
 
 def installing() -> bool:
-    try:
-        pid = int(_lock().read_text().strip())
-    except (OSError, ValueError):
-        return False
-    return _pid_alive(pid)
+    cur = _read_lock()
+    return cur is not None and cur[0] == "install" and _pid_alive(cur[1])
 
 
 # ------------------------------------------------------------------------------ diyaloglar (Qt yok: platformun kendi araci)
@@ -155,39 +216,60 @@ def ensure(show: bool) -> bool:
     """Bilesenler hazirsa True. Degilse kullaniciya sor, onaylarsa arka planda kurmaya basla (bitince 3D acilir) -> False."""
     if ready():
         return True
-    if installing():
-        info("IPCubed is still downloading its components.\n\nThe 3D view will open automatically when it is done.\n\n"
-             f"Progress: {log_path()}")
-        return False
+    if not _take_lock("dialog"):
+        if installing():
+            info("IPCubed is still downloading its components.\n\nThe 3D view will open automatically when it is done.\n\n"
+                 f"Progress: {log_path()}")
+        return False                       # onay diyalogu zaten ekranda
+    try:
+        return _ask_and_install(show)
+    except BaseException:
+        _drop_lock()
+        raise
+
+
+def _ask_and_install(show: bool) -> bool:
     mb = download_mb()
-    size = f"about {mb} MB" if mb else "a few hundred MB"
-    head = ("This IPCubed update requires updated components to run" if _update()
+    upd = _update()
+    size = (f"up to {mb} MB" if upd else f"about {mb} MB") if mb else "a few hundred MB"   # guncellemede cogu zaten kurulu
+    head = ("This IPCubed update requires updated components to run" if upd
             else "IPCubed requires additional components to run")
     if not ask(f"{head} ({size} download: Qt, OpenCascade, wgpu...).\n\n"
                "Would you like to download them now?\n\n"
                "This is needed only once. The 3D view opens automatically when it is done."):
+        _drop_lock()
         return False
-    _spawn_installer(show)
+    _set_lock("install", _spawn_installer(show))       # kilit el degistirir: arada bosluk yok
     return False
 
 
-def _spawn_installer(show: bool):
+def _spawn_installer(show: bool) -> int:
     cmd = [sys.executable, "-m", "ipcubed.setup_deps", "--install"] + (["--show"] if show else [])
     kw: dict = {"cwd": str(HERE.parent), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if sys.platform == "win32":
         flags = 0x00000008 | 0x00000200 | 0x08000000           # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
         try:
-            subprocess.Popen(cmd, creationflags=flags | 0x01000000, **kw)     # BREAKAWAY_FROM_JOB: KiCad'in is nesnesinden cik
+            return subprocess.Popen(cmd, creationflags=flags | 0x01000000, **kw).pid     # BREAKAWAY_FROM_JOB: KiCad'in is nesnesinden cik
         except OSError:
-            subprocess.Popen(cmd, creationflags=flags, **kw)
-    else:
-        subprocess.Popen(cmd, start_new_session=True, **kw)
+            return subprocess.Popen(cmd, creationflags=flags, **kw).pid
+    return subprocess.Popen(cmd, start_new_session=True, **kw).pid
+
+
+def _kicad_running() -> bool:
+    try:
+        import psutil                      # bilesenlerle birlikte kuruldu
+    except ImportError:
+        return True
+    for p in psutil.process_iter(["name"]):
+        n = (p.info["name"] or "").lower()
+        if (n.startswith("kicad") or n.startswith("pcbnew")) and "cli" not in n:
+            return True
+    return False
 
 
 def install(show: bool) -> int:
     """Arka plan kurucusu: pip ile deps.txt'yi bu sanal ortama kur; basarida isaret dosyasi + 3D'yi ac, hatada diyalog."""
-    lock = _lock()
-    lock.write_text(str(os.getpid()))
+    _set_lock("install", os.getpid())
     log = log_path()
     try:
         with open(log, "w", encoding="utf-8") as f:
@@ -197,17 +279,17 @@ def install(show: bool) -> int:
                                 "--only-binary", ":all:", "--progress-bar", "off", "-r", str(DEPS)],
                                stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
             f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {r.returncode}\n")
-        if r.returncode != 0:
-            info(f"Downloading IPCubed components failed.\n\nDetails: {log}\n\n"
-                 "Check your internet connection, then press 3D Live again to retry.", error=True)
-            return r.returncode
-        _marker().write_text(json.dumps({"deps": _deps_hash(), "time": time.time()}))
+        if r.returncode == 0:
+            _marker().write_text(json.dumps({"deps": _deps_hash(), "time": time.time()}))
     finally:
-        try:
-            lock.unlink()
-        except OSError:
-            pass
+        _drop_lock()                       # diyalogdan ONCE: hata mesaji acikken 3D Live yeniden denesin
+    if r.returncode != 0:
+        info(f"Downloading IPCubed components failed.\n\nDetails: {log}\n\n"
+             "Check your internet connection, then press 3D Live again to retry.", error=True)
+        return r.returncode
     from .ctl import launch, send
+    if not _kicad_running():                # indirme surerken KiCad kapatildi: sahipsiz viewer baslatma (sonraki 3D Live acar)
+        return 0
     if not send("ping", timeout=0.5):
         launch(*(["--show"] if show else []))
     return 0

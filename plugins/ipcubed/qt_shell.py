@@ -342,6 +342,7 @@ class ViewerShell(QtCore.QObject):
     _editor_up = False
     _seen_editor = False
     _gone_since = None
+    _nokicad_since = None
 
     def _watch_editor(self):
         """Gomulu mod: PCB duzenleyici var mi? Belirince KiCad'e baglan (hazirda bekle), kaybolunca birak. 3 tusunu dinle."""
@@ -375,6 +376,20 @@ class ViewerShell(QtCore.QObject):
                 if self._shown and not self._external:
                     self._finish_hide()
                 self.core.stop_sync()                # KiCad yokken sifir polling
+        if not up and not self._persist and not self._seen_editor and now - getattr(self, "_kicad_chk", 0) > 2:
+            # editor hic gorulmedi (KiCad, viewer acilirken kapanmis olabilir): 30 sn hic KiCad sureci yoksa cik
+            self._kicad_chk = now
+            try:
+                alive = kicad_running()
+            except Exception:  # noqa: BLE001
+                alive = True
+            if alive:
+                self._nokicad_since = None
+            elif now - (self._nokicad_since or now) > 30:
+                _log("KiCad yok (hic gorulmedi) -> cikis")
+                self.quit()
+            else:
+                self._nokicad_since = self._nokicad_since or now
         if not up and not self._persist and self._seen_editor and now - (self._gone_since or now) > 5:
             # PCB duzenleyici kapandi: proje yoneticisi de yoksa (KiCad tamamen kapandi) daemon'u kapat.
             # Yalniz pcbnew kapanip KiCad acik kaldiysa beklemeye devam: yeniden acilinca '3' hemen calissin.
