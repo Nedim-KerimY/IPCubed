@@ -20,11 +20,12 @@ jobs:
         id: build
         run: |
           python tools/build_pcm_zip.py dist
+          cp dist/IPCubed-*-pcm.zip dist/IPCubed-pcm.zip   # sabit ad: README'deki releases/latest/download/IPCubed-pcm.zip
           echo "version=$(python -c "import json;print(json.load(open('metadata.json'))['versions'][0]['version'])")" >> "$GITHUB_OUTPUT"
       - name: Validate package (KiCad's official schemas, archive layout)
         run: |
           python -m pip install --quiet jsonschema
-          python tools/validate_package.py dist/*.zip
+          for z in dist/*.zip; do python tools/validate_package.py "$z"; done
       - uses: actions/upload-artifact@v4
         with:
           name: IPCubed-pcm
@@ -35,6 +36,7 @@ jobs:
           TAG: v${{ steps.build.outputs.version }}
         run: |
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" --prerelease \
-            --title "IPCubed $TAG" \
-            --notes "KiCad: Plugin and Content Manager > Install from File... and pick IPCubed-*-pcm.zip. See README on the kicad-plugin branch."
+          # normal (pre-release degil) ve "latest": releases/latest/download/... yalniz boyle calisir
+          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" --latest \
+            --title "IPCubed $TAG (beta)" \
+            --notes "Install: KiCad > Plugin and Content Manager > Install from File... and pick IPCubed-pcm.zip (do not unzip it). Do not use GitHub's Code > Download ZIP. See the README."

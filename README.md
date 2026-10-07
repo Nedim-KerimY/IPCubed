@@ -5,6 +5,11 @@
 This `kicad-plugin` branch contains only what KiCad needs to install and run the plugin. Development happens on
 [`main`](https://github.com/Nedim-KerimY/IPCubed/tree/main).
 
+## ⬇ [Download IPCubed-pcm.zip](https://github.com/Nedim-KerimY/IPCubed/releases/latest/download/IPCubed-pcm.zip) — then KiCad → Plugin and Content Manager → Install from File
+
+> Don't use GitHub's green **Code → Download ZIP** button to install: that zip wraps everything in an extra folder and KiCad
+> rejects it ("The archive does not contain a valid metadata.json file").
+
 [![IPCubed — Altium-Style High Quality 3D Mode in KiCad](https://img.youtube.com/vi/FmNPxe1aHF4/hqdefault.jpg)](https://www.youtube.com/watch?v=FmNPxe1aHF4)
 
 ## Requirements
@@ -18,9 +23,13 @@ This `kicad-plugin` branch contains only what KiCad needs to install and run the
 
 ### Option A: Plugin and Content Manager (recommended)
 
-1. Download `IPCubed-<version>-pcm.zip` from the [Releases](https://github.com/Nedim-KerimY/IPCubed/releases) page.
+1. Download **[IPCubed-pcm.zip](https://github.com/Nedim-KerimY/IPCubed/releases/latest/download/IPCubed-pcm.zip)**
+   (always the latest version; older versions are on the [Releases](https://github.com/Nedim-KerimY/IPCubed/releases) page).
    Do **not** use GitHub's green *Code → Download ZIP* button for this option.
-2. In KiCad: **Plugin and Content Manager → Install from File...** and pick the zip.
+2. In KiCad: **Plugin and Content Manager → Install from File...** and pick the zip as it is (don't unzip it).
+
+   Already downloaded *Code → Download ZIP*? Unzip it, open the `IPCubed-kicad-plugin` folder, select everything **inside**
+   it and zip those files (not the folder). KiCad accepts that zip too.
 3. Go to step *First run* below.
 
 ### Option B: Manual copy
