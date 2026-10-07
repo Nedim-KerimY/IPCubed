@@ -42,3 +42,7 @@ python -m ipcubed.autostart [--off]      # start at login (Windows registry / XD
 * Linux needs a Vulkan-capable driver for wgpu (Mesa `vulkan-*` or the NVIDIA driver).
 * Settings and caches: `~/.config/ipcubed`, `~/.cache/ipcubed` (Windows: `%LOCALAPPDATA%\ipcubed`).
 * Debug log: `IPCUBED_DEBUG=1` → `$TMPDIR/ipcubed.log`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
