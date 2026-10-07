@@ -279,25 +279,150 @@ def _kicad_running() -> bool:
     return False
 
 
+# ------------------------------------------------------------------------------ indirme ilerlemesi
+_NICE = {"pyside6_essentials": "Qt (PySide6)", "pyside6": "Qt (PySide6)", "shiboken6": "Qt (Shiboken)",
+         "cadquery_ocp_novtk": "OpenCascade", "cadquery_ocp": "OpenCascade", "wgpu": "wgpu (GPU)", "pygfx": "pygfx",
+         "numpy": "NumPy", "matplotlib": "Matplotlib", "shapely": "Shapely", "pillow": "Pillow"}
+_UNIT = {"bytes": 1, "byte": 1, "kB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3}      # pip boyutlari 1000 tabanli
+
+
+class _Progress:
+    """pip ciktisindan (--progress-bar raw: 'Progress N of M') toplam indirme ilerlemesi. Toplam: dep_sizes.json tahmini."""
+
+    def __init__(self, total_mb):
+        self.total = (total_mb or 0) * 1000 ** 2
+        self.done = 0                      # biten dosyalarin baytlari
+        self.cur = self.cur_total = 0      # suren dosya
+        self.pending = 0                   # suren dosyanin "Downloading x (boyut)" satirindaki boyutu
+        self.name = ""
+        self.phase = "prepare"             # prepare -> download -> install
+
+    def feed(self, line: str):
+        import re
+        line = line.strip()
+        m = re.match(r"Progress (\d+) of (\d+)", line)
+        if m:
+            self.cur, self.cur_total = int(m.group(1)), int(m.group(2))
+            return
+        m = re.match(r"(Downloading|Using cached) (\S+) \(([\d.]+) (\w+)\)", line)
+        if m and not m.group(2).endswith(".metadata"):
+            self._finish()
+            size = int(float(m.group(3)) * _UNIT.get(m.group(4), 1))
+            if m.group(1) == "Using cached":
+                self.done += size
+            else:
+                self.pending, self.phase = size, "download"
+                base = m.group(2).split("-")[0].lower()
+                self.name = _NICE.get(base, base)
+        elif line.startswith("Installing collected packages"):
+            self._finish()
+            self.phase = "install"
+
+    def _finish(self):
+        if self.pending or self.cur_total:
+            self.done += max(self.pending, self.cur_total)
+        self.pending = self.cur = self.cur_total = 0
+
+    def fraction(self) -> float:
+        got = self.done + self.cur
+        if got > self.total * 0.98:        # tahmin kucuk kaldi (yeni surumler buyumus): cubuk %98'de takilmasin
+            self.total = int(got * 1.08)
+        return min(0.99, got / self.total) if self.total else 0.0
+
+    def message(self) -> str:
+        if self.phase == "install":
+            return "Installing components...\nThis can take a minute."
+        if self.phase == "prepare":
+            return "Preparing the download..."
+        mb = (self.done + self.cur) / 1000 ** 2
+        return f"Downloading {self.name}...\n{mb:.0f} of ~{self.total / 1000 ** 2:.0f} MB"
+
+
+def _kill_tree(p: subprocess.Popen):
+    """pip'i durdur. Windows: sanal ortamin python.exe'si asil yorumlayiciyi ALT surec olarak baslatir -> agaci oldur."""
+    if p.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=0x08000000)
+    else:
+        p.terminate()
+
+
+def _show_progress(prog: _Progress, proc: subprocess.Popen, finished) -> bool:
+    """wx ilerleme diyalogu (KiCad'in Python'unda hazir; Qt henuz kurulmadi). Iptal edildiyse True. wx yoksa diyalogsuz bekler."""
+    try:
+        import wx
+    except Exception:  # noqa: BLE001  wx yok (bazi Linux kurulumlari): eski davranis, sessiz kurulum
+        finished.wait()
+        return False
+    app = wx.App(False)  # noqa: F841
+    dlg = wx.ProgressDialog(TITLE, "Preparing the download...\n", maximum=1000,
+                            style=wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME | wx.PD_SMOOTH | wx.PD_AUTO_HIDE)
+    dlg.SetSize(wx.Size(max(dlg.GetSize().width, 440), dlg.GetSize().height))
+    dlg.Raise()
+    cancelled = False
+    try:
+        while not finished.wait(0.1):
+            if prog.phase == "install":
+                ok, _ = dlg.Pulse(prog.message())
+            else:
+                f = prog.fraction()
+                ok, _ = dlg.Update(int(f * 1000), prog.message() + (f"  ({f * 100:.0f}%)" if prog.phase == "download" else ""))
+            if not ok:
+                cancelled = True
+                _kill_tree(proc)
+                finished.wait(10)
+                break
+    finally:
+        dlg.Destroy()
+    return cancelled
+
+
 def install(show: bool) -> int:
-    """Arka plan kurucusu: pip ile deps.txt'yi bu sanal ortama kur; basarida isaret dosyasi + 3D'yi ac, hatada diyalog."""
+    """Arka plan kurucusu: pip ile deps.txt'yi bu sanal ortama kur (ilerleme diyalogu ile); basarida isaret dosyasi + 3D'yi ac,
+    hatada diyalog."""
+    import threading
     _set_lock("install", os.getpid())
     log = log_path()
+    cancelled = False
     try:
         with open(log, "w", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} IPCubed components -> {sys.prefix}\n")
             f.flush()
             from .ctl import clean_env
             # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
-            # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin
-            r = subprocess.run([sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                                "--only-binary", ":all:", "--ignore-installed", "--progress-bar", "off", "-r", str(DEPS)],
-                               stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=clean_env())
-            f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {r.returncode}\n")
-        if r.returncode == 0:
+            # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin. --progress-bar raw: diyalog icin.
+            proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
+                                     "--only-binary", ":all:", "--ignore-installed", "--progress-bar", "raw", "-r", str(DEPS)],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=clean_env(),
+                                    text=True, encoding="utf-8", errors="replace", bufsize=1)
+            prog = _Progress(download_mb())
+            finished = threading.Event()
+
+            def pump():
+                try:
+                    for line in proc.stdout:
+                        prog.feed(line)
+                        if not line.startswith("Progress "):     # ham ilerleme satirlari gunlugu sisirmesin
+                            f.write(line)
+                            f.flush()
+                    proc.wait()
+                finally:
+                    finished.set()
+
+            threading.Thread(target=pump, daemon=True).start()
+            cancelled = _show_progress(prog, proc, finished)
+            finished.wait()
+            rc = proc.returncode if proc.returncode is not None else proc.wait()
+            f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {rc}{' (cancelled)' if cancelled else ''}\n")
+        r = subprocess.CompletedProcess(proc.args, rc)
+        if r.returncode == 0 and not cancelled:
             _marker().write_text(json.dumps({"deps": _deps_hash(), "time": time.time()}))
     finally:
         _drop_lock()                       # diyalogdan ONCE: hata mesaji acikken 3D Live yeniden denesin
+    if cancelled:
+        return 1                           # kullanici iptal etti: hata diyalogu yok; 3D Live yeniden sorar
     if r.returncode != 0:
         info(f"Downloading IPCubed components failed.\n\nDetails: {log}\n\n"
              "Check your internet connection, then press 3D Live again to retry.", error=True)
