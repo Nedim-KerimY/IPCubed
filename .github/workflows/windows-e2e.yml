@@ -1,0 +1,62 @@
+name: Windows end-to-end (real KiCad)
+
+# Installs KiCad 10 on a Windows VM, installs the plugin like "Install from File", clicks 3D Live like a user and checks
+# the overlay (tests/win_e2e.py). Does not publish anything. Screenshots and logs: the run's "win-e2e-*" artifacts.
+on:
+  push:
+    branches: [ccr-e01b5649-is3y9q]
+    paths: [.github/workflows/windows-e2e.yml, tests/win_e2e.py]
+  workflow_dispatch:
+    inputs:
+      plugin_ref:
+        description: Branch/commit of the plugin to test
+        default: kicad-plugin
+      kicad_version:
+        description: KiCad version
+        default: "10.0.6"
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: [100, 125]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PLUGIN_REF: ${{ github.event.inputs.plugin_ref || 'kicad-plugin' }}
+      KICAD_VERSION: ${{ github.event.inputs.kicad_version || '10.0.6' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: driver
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PLUGIN_REF }}
+          path: plugin
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install KiCad
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          curl.exe -sSL -o kicad-setup.exe "https://github.com/KiCad/kicad-source-mirror/releases/download/$env:KICAD_VERSION/kicad-$env:KICAD_VERSION-x86_64.exe"
+          (Get-Item kicad-setup.exe).Length / 1MB
+          Start-Process .\kicad-setup.exe -ArgumentList '/S' -Wait
+          Get-ChildItem "C:\Program Files\KiCad"
+          Remove-Item kicad-setup.exe
+      - name: Build the plugin package
+        run: python plugin/tools/build_pcm_zip.py dist
+      - name: Driver dependencies
+        run: python -m pip install --quiet numpy pillow psutil pywin32
+      - name: Run the end-to-end test
+        shell: pwsh
+        run: |
+          $zip = (Get-ChildItem dist\IPCubed-*-pcm.zip | Select-Object -First 1).FullName
+          python driver\tests\win_e2e.py --kicad "C:\Program Files\KiCad\$($env:KICAD_VERSION.Substring(0,4))" --zip $zip --out e2e-out --scale ${{ matrix.scale }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-e2e-${{ matrix.scale }}
+          path: e2e-out
