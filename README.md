@@ -122,8 +122,10 @@ You can delete them to reset the plugin.
   `python tools/dep_sizes.py` to refresh the sizes shown in the dialog (`dep_sizes.json`).
 * `metadata.json` + `resources/icon.png` make up the Plugin and Content Manager package.
 * `python tools/build_pcm_zip.py` builds `dist/IPCubed-<version>-pcm.zip`. The *Package KiCad plugin* GitHub Actions
-  workflow runs it on every push to this branch and publishes the zip as the `v<version>` pre-release.
-  Bump `versions[0].version` in `metadata.json` for a new release.
+  workflow runs it on every push to this branch and publishes the zip as the `v<version>` **pre-release** (for testers;
+  the README download link keeps pointing to the current latest version).
+  Bump `versions[0].version` in `metadata.json` for a new release. To make a version the default download for everyone:
+  *Actions → Package KiCad plugin → Run workflow* with **make_latest** ticked.
 * To bring in changes from `main`: `git merge main` (the `ipcubed/` → `plugins/ipcubed/` move is followed by git).
 
 ## License

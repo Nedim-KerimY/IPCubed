@@ -4,6 +4,11 @@ on:
   push:
     branches: [kicad-plugin]
   workflow_dispatch:
+    inputs:
+      make_latest:
+        description: "Make this version the latest (default download for everyone)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -65,9 +70,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ steps.build.outputs.version }}
+          MAKE_LATEST: ${{ github.event.inputs.make_latest || 'false' }}
         run: |
+          # "latest" (releases/latest/download/IPCubed-pcm.zip, README link) changes ONLY when asked for (Run workflow >
+          # make_latest). A new version is published as a pre-release for testers; rebuilding the version that is already
+          # the latest keeps it the latest.
+          CUR=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          # normal (pre-release degil) ve "latest": releases/latest/download/... yalniz boyle calisir
-          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" --latest \
-            --title "IPCubed $TAG (beta)" \
+          if [ "$MAKE_LATEST" = "true" ] || [ "$TAG" = "$CUR" ]; then
+            KIND="--latest"; TITLE="IPCubed $TAG (beta)"
+          else
+            KIND="--prerelease --latest=false"; TITLE="IPCubed $TAG (pre-release, testing)"
+          fi
+          echo "current latest: ${CUR:-none}; publishing $TAG with $KIND"
+          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" $KIND --title "$TITLE" \
             --notes "Install: KiCad > Plugin and Content Manager > Install from File... and pick IPCubed-pcm.zip (do not unzip it). Do not use GitHub's Code > Download ZIP. See the README."
