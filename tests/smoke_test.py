@@ -159,8 +159,11 @@ def run_checks():
         from ipcubed.setup_deps import MAX_REL_PATH
         sp = Path(sysconfig.get_paths()["purelib"])
         longest = max((len(str(p.relative_to(sp))) for p in sp.rglob("*")), default=0)
-        assert longest <= MAX_REL_PATH, f"longest relative path {longest} > MAX_REL_PATH {MAX_REL_PATH}"
-        return f"longest {longest} <= {MAX_REL_PATH}"
+        if sys.platform != "win32":            # sinir yalniz Windows'ta; Linux/macOS tekerleklerinde yollar farkli
+            return f"longest {longest} (limit only checked on Windows)"
+        # tam esitlik: buyukse kurulum yarim kalir, kucukse kontrol uzun kullanici adlarini gereksiz engeller
+        assert longest == MAX_REL_PATH, f"longest relative path {longest} != MAX_REL_PATH {MAX_REL_PATH}: update setup_deps"
+        return f"longest {longest} == {MAX_REL_PATH}"
 
     @check("installer helpers")
     def _():

@@ -5,7 +5,7 @@ name: Windows end-to-end (real KiCad)
 on:
   push:
     branches: [ccr-e01b5649-is3y9q]
-    paths: [.github/workflows/windows-e2e.yml, tests/win_e2e.py]
+    paths: [.github/workflows/windows-e2e.yml, tests/win_e2e.py, plugins/**]
   workflow_dispatch:
     inputs:
       plugin_ref:
@@ -22,12 +22,13 @@ jobs:
       matrix:
         include:
           # 100% with Mesa and 100% without OpenGL passed/were analysed in run 38787035851; now the scaled displays
-          - { scale: 125, gl: mesa }    # software OpenGL: KiCad uses its OpenGL canvas like on a PC with a GPU
-          - { scale: 150, gl: mesa }
+          - { scale: 100, gl: mesa }    # software OpenGL: KiCad uses its OpenGL canvas like on a PC with a GPU
+          - { scale: 125, gl: mesa }
+          - { scale: 100, gl: none }    # no OpenGL: KiCad falls back to its software (Cairo) canvas
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      PLUGIN_REF: ${{ github.event.inputs.plugin_ref || 'kicad-plugin' }}
+      PLUGIN_REF: ${{ github.event.inputs.plugin_ref || github.sha }}   # push: the plugin code of this commit
       KICAD_VERSION: ${{ github.event.inputs.kicad_version || '10.0.6' }}
     steps:
       - uses: actions/checkout@v4

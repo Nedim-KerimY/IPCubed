@@ -48,6 +48,10 @@ def load_model(path: Path, quality: str = "normal") -> MeshData | None:
     ext = path.suffix.lower()
     if ext in (".step", ".stp"):
         mesh = convert_step(path, quality)
+    elif ext in (".stpz", ".stp.gz", ".step.gz") or path.name.lower().endswith((".stp.gz", ".step.gz")):
+        mesh = _convert_gz_step(path, quality)
+    elif ext in (".igs", ".iges"):
+        mesh = convert_step(path, quality, iges=True)
     elif ext in (".wrl", ".wrz", ".vrml"):
         from .wrl import load_wrl
         mesh = load_wrl(path)
@@ -67,7 +71,27 @@ _QUALITY = {  # (linear deflection mm, angular rad)
 }
 
 
-def convert_step(path: Path, quality: str = "normal") -> MeshData | None:
+def _convert_gz_step(path: Path, quality: str) -> MeshData | None:
+    """.stpz: gzip ile sikistirilmis STEP (KiCad destekler). Gecici dosyaya acilir."""
+    import gzip
+    import os
+    import tempfile
+    fd, tmp = tempfile.mkstemp(suffix=".step")
+    try:
+        with os.fdopen(fd, "wb") as out, gzip.open(path, "rb") as src:
+            while chunk := src.read(1 << 20):
+                out.write(chunk)
+        return convert_step(Path(tmp), quality)
+    except (OSError, EOFError):
+        return None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def convert_step(path: Path, quality: str = "normal", iges: bool = False) -> MeshData | None:
     from OCP.BRep import BRep_Tool
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.IFSelect import IFSelect_RetDone
@@ -86,7 +110,11 @@ def convert_step(path: Path, quality: str = "normal") -> MeshData | None:
     lin, ang = _QUALITY[quality]
 
     doc = TDocStd_Document(TCollection_ExtendedString("XmlOcaf"))
-    rd = STEPCAFControl_Reader()
+    if iges:
+        from OCP.IGESCAFControl import IGESCAFControl_Reader
+        rd = IGESCAFControl_Reader()
+    else:
+        rd = STEPCAFControl_Reader()
     rd.SetColorMode(True)
     rd.SetNameMode(False)
     if rd.ReadFile(str(path)) != IFSelect_RetDone or not rd.Transfer(doc):

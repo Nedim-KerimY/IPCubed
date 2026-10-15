@@ -38,6 +38,12 @@ def kicad_running() -> bool:
     return False
 
 
+def _debug_log_hint() -> str:
+    import os
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "ipcubed.log")
+
+
 class ViewerFrame(QtWidgets.QWidget):
     """Gorunum penceresi: solda (istege bagli) 3D Ayarlari paneli + sagda 3D viewport. KiCad uzerine bindirilen / harici pencere olan bu."""
     closed = QtCore.Signal()
@@ -72,7 +78,6 @@ class ViewerShell(QtCore.QObject):
         self.cfg = Settings.load()
         # vsync kapali: kare suresi 16.7 ms'yi biraz asinca 60'tan 30 FPS'e dusmesin (ekran 60 Hz)
         self.canvas = QRenderWidget(vsync=False)
-        self.canvas.setMinimumSize(320, 240)
         self.core = ViewerCore(self.canvas, self.cfg)
         self.settings_win = SettingsWindow(self.cfg, self._on_setting, self._rebuild_mask, self._on_models_hidden)
         self.core.on_status = self.settings_win.set_status
@@ -89,7 +94,6 @@ class ViewerShell(QtCore.QObject):
         fl.addWidget(self.canvas, 1)
         self.frame.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.frame.setStyleSheet("ViewerFrame { background: #2b2b2b; }")
-        self.frame.setMinimumSize(560, 300)
         self.frame.closed.connect(self._on_frame_closed)
         self._external = False
 
@@ -106,9 +110,10 @@ class ViewerShell(QtCore.QObject):
         if not self.embedded:
             self.container = self.frame           # bagimsiz mod: kendi penceresi
             self.frame.setWindowTitle(TITLE)
+            self._window_min_size(True)
             self.frame.resize(1400, 900)
         else:
-            self.embedder.prepare(self.frame)
+            self.embedder.prepare(self.frame)     # bindirme: boyut KiCad'in canvas'indan gelir; Qt minimumu onu ezmesin
 
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._context_menu)
@@ -260,12 +265,18 @@ class ViewerShell(QtCore.QObject):
         self.settings_win.hide()
         self.core.request_draw()
 
+    def _window_min_size(self, on: bool):
+        """Kendi penceresi olunca makul minimum; bindirmede yok (kucuk KiCad penceresinde canvas'tan buyuk tasmasin)."""
+        self.canvas.setMinimumSize(*((320, 240) if on else (0, 0)))
+        self.frame.setMinimumSize(*((560, 300) if on else (0, 0)))
+
     # ------------------------------------------------------------ harici pencere
     def go_external(self):
         """Viewport'u KiCad'den ayir: normal, boyutlandirilabilir pencere (canli senkron surer)."""
         if not (self.embedded and self.is_open and not self._external):
             return
         board = getattr(self.core, "board_name", "") or ""
+        self._window_min_size(True)
         self.embedder.make_external(self.frame, f"IPCubed — {board}" if board else TITLE)
         self._external = True
         self.frame.activateWindow()
@@ -276,6 +287,7 @@ class ViewerShell(QtCore.QObject):
         if not self._external:
             return
         self._external = False
+        self._window_min_size(False)
         self.embedder.make_embedded(self.frame)
         if not self.embedder.place(self.frame):
             self._finish_hide()
@@ -310,6 +322,9 @@ class ViewerShell(QtCore.QObject):
 
     def show3d(self):
         if self.embedded and not self._editor_up:
+            if not self._pending_show:
+                import time
+                self._pending_since = time.monotonic()
             self._pending_show = True       # editor belirince ac
             return
         self.core.start_sync()
@@ -366,6 +381,15 @@ class ViewerShell(QtCore.QObject):
             up = self.embedder.editor_present()
         except Exception:  # noqa: BLE001
             up = self._editor_up
+        if not up and self._pending_show and not getattr(self, "_warned_no_editor", False) \
+                and now - getattr(self, "_pending_since", now) > 10:
+            self._warned_no_editor = True           # sessizce beklemek yerine nedenini soyle (bir kez)
+            _log("3D istendi ama PCB duzenleyici penceresi bulunamadi")
+            self._notice("IPCubed cannot find the PCB editor window to show the 3D view on.\n\n"
+                         "If the Appearance panel (Layers / Objects / Nets) is hidden, show it again: "
+                         "View > Panels > Appearance. Then press 3D Live again.\n\n"
+                         "If the problem stays, please report it with the log file "
+                         f"(set IPCUBED_DEBUG=1 before starting KiCad): {_debug_log_hint()}")
         if up:
             self._gone_since = None
             self._seen_editor = True
@@ -448,6 +472,15 @@ class ViewerShell(QtCore.QObject):
             else:
                 self._closing = False         # bagimsiz modda pencere kalir (2D gorunumde)
                 self._shown = True
+
+    def _notice(self, text: str):
+        """Engellemeyen bilgi kutusu (viewer dongusu durmasin), KiCad'in ustunde."""
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, TITLE, text, QtWidgets.QMessageBox.Ok)
+        box.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+        box.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        box.show()
+        box.raise_()
+        self._notice_box = box
 
     def quit(self):
         if self._external:

@@ -49,15 +49,21 @@ def extract_embedded(board_text: str, only: set[str] | None = None) -> dict[str,
         if not d:
             continue                                          # ayni dosyanin veri icermeyen tekrari
         folder = root / checksum.lower()
-        target = folder / Path(name).name
-        if not target.exists():
-            data = _decode(d.group(1))
-            if data is None:
-                continue
-            folder.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_suffix(target.suffix + ".tmp")
-            tmp.write_bytes(data)
-            tmp.replace(target)
+        # Windows'ta gecersiz karakterli bir ad (: * ? " < > |) tek dosyayi bozsun, diger gomulu modelleri degil
+        target = folder / (re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(name).name).strip(" .") or "model")
+        try:
+            if not target.exists():
+                data = _decode(d.group(1))
+                if data is None:
+                    continue
+                folder.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_suffix(target.suffix + ".tmp")
+                tmp.write_bytes(data)
+                tmp.replace(target)
+        except OSError as e:
+            from .log import _log
+            _log(f"gomulu model yazilamadi: {name}: {e}")
+            continue
         out[name] = str(target)
     return out
 

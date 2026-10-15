@@ -41,6 +41,7 @@ class SyncThread(threading.Thread):
         last_hot = 0.0
         fresh_fp = False                      # sonraki geometri kontrolu footprint'leri de hemen cekmeli mi
         backoff = 0.0                         # son yenilemenin suresine gore kontrol araligi uzar (yavas/buyuk kartlarda firtina olmasin)
+        full_inflight = False
         while not self._halt.is_set():
             try:
                 if src is None:
@@ -57,11 +58,13 @@ class SyncThread(threading.Thread):
                         last = sig
                     if set(sig) != set(last) or self.request_full.is_set():
                         self.request_full.clear()
+                        full_inflight = True             # hata olursa (dosya kilidi, baglanti...) tam yukleme yeniden denenir
                         gs = src.geom_signature()
                         self.out.put(("fetching", True))
                         prev_snap = src.snapshot()
                         geom_ref = gs
                         self.out.put(("full", self._ship(prev_snap)))
+                        full_inflight = False
                     elif sig != last:
                         changed = [k for k in sig if sig[k] != last.get(k)]
                         _log(f"moved: {len(changed)} footprint")
@@ -110,10 +113,16 @@ class SyncThread(threading.Thread):
                     time.sleep(0.04)
                     continue
                 _log(f"api hatasi: {e}")
+                if full_inflight:
+                    self.request_full.set()
+                    full_inflight = False
                 time.sleep(0.5)
                 continue
             except Exception as e:  # noqa: BLE001  KiCad kapandi / yeniden aciliyor
                 _log(f"baglanti hatasi: {type(e).__name__}: {e}")
+                if full_inflight:                    # yarim kalan tam yukleme kaybolmasin: viewer hic "yuklendi" olmazdi
+                    self.request_full.set()
+                    full_inflight = False
                 self.out.put(("status", f"KiCad connection lost: {type(e).__name__}"))
                 src = None
                 time.sleep(1.0)
@@ -141,7 +150,14 @@ class SyncThread(threading.Thread):
         tmp = path.with_suffix(".tmp")
         with open(tmp, "wb") as f:
             pickle.dump({"copper": snap.copper, "silk": snap.silk}, f, protocol=5)
-        tmp.replace(path)
+        for i in range(6):                            # Windows: antivirus/indeksleyici yeni dosyayi kisa sure kilitleyebilir
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError:
+                if i == 5:
+                    raise
+                time.sleep(0.1 * (i + 1))
         olds = sorted(d.glob(f"{os.getpid()}_*.pkl"), key=lambda p: int(p.stem.split("_")[1]))
         for p in olds[:-4]:                           # son birkac goruntu (isler hala okuyor olabilir) kalir
             try:

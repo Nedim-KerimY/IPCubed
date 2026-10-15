@@ -231,8 +231,25 @@ def close_kicad(proc):
 
 
 def canvas_of(top):
-    gl = [c for c in windows(top) if cls(c) == "wxGLCanvas"]
-    return max((rect(c) for c in gl), key=lambda r: r[2] * r[3]) if gl else None
+    """PCB canvas: wxGLCanvas (OpenGL) or, in KiCad's software (Cairo) mode, the largest child window without children."""
+    kids = windows(top)
+    gl = [c for c in kids if cls(c) == "wxGLCanvas"]
+    if gl:
+        return max((rect(c) for c in gl), key=lambda r: r[2] * r[3])
+    tr = rect(top)
+    for c in sorted(kids, key=lambda c: -rect(c)[2] * rect(c)[3])[:8]:
+        if rect(c)[2] * rect(c)[3] < 0.2 * tr[2] * tr[3]:
+            break
+        if not windows(c):
+            return rect(c)
+    return None
+
+
+def dump_children(top, path: Path):
+    """KiCad's window tree (class, rect, child count) for diagnosing canvas detection."""
+    with open(path, "w", encoding="utf-8") as f:
+        for c in sorted(windows(top), key=lambda c: -rect(c)[2] * rect(c)[3])[:60]:
+            f.write(f"{c:#x} class={cls(c)} rect={rect(c)} children={len(windows(c))} title={title(c)[:40]!r}\n")
 
 
 # ---------------------------------------------------------------- toolbar button
@@ -392,6 +409,7 @@ def run(a):
     time.sleep(15)
     handle_kicad_dialogs(p)
     shot("board")
+    dump_children(top, OUT / "kicad-children.txt")
     results["info"]["kicad_rect"] = rect(top)
     results["info"]["kicad_dpi"] = u.GetDpiForWindow(top)
 

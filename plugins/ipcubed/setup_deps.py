@@ -250,7 +250,7 @@ def _ask_and_install(show: bool) -> bool:
 
 
 # ------------------------------------------------------------------------------ indirmeden once: bu bilgisayarda calisir mi?
-MAX_REL_PATH = 155      # bilesenlerdeki en uzun dosya yolu (site-packages a gore; PySide6 qml: 151), CI testi dogrular
+MAX_REL_PATH = 151      # bilesenlerdeki en uzun dosya yolu (site-packages a gore; PySide6 qml), CI testi tam olarak dogrular
 MIN_PYTHON = (3, 11)    # numpy 2.4 / cadquery-ocp-novtk 8: cp311+ wheel'leri
 
 
@@ -327,6 +327,11 @@ def preflight(mb: int | None) -> bool:
         return False
     if not _sac_gate():
         return False
+    if _update() and _viewers_running():
+        info("An IPCubed 3D view is still running (another KiCad window?).\n\n"
+             "Its files cannot be replaced while it runs. Close all KiCad windows, open KiCad again, "
+             "then press 3D Live to update the components.", error=True)
+        return False
     import shutil
     need = max(1.5, 3.5 * (mb or 200) / 1000)            # GB: indirme + acilmis paketler (~3x) + pip gecici dosyalari
     try:
@@ -347,7 +352,48 @@ def preflight(mb: int | None) -> bool:
              "New-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem -Name LongPathsEnabled "
              "-Value 1 -PropertyType DWORD -Force\n\nthen restart Windows and press 3D Live again.", error=True)
         return False
+    missing = missing_x11_libs()
+    if missing:
+        info("Qt (the 3D view's window toolkit) needs some X11 system libraries that are not installed on this computer:\n"
+             f"{', '.join(missing)}\n\nInstall them, then press 3D Live again:\n"
+             f"    {X11_APT}\n    (Fedora: {X11_DNF})", error=True)
+        return False
     return True
+
+
+# Qt 6.5+ xcb eklentisinin istedigi sistem kutuphaneleri (minimal kurulumlarda, Ubuntu masaustunde bile libxcb-cursor0 eksik olabilir)
+X11_LIBS = ("xcb-cursor", "xkbcommon-x11", "xcb-icccm", "xcb-keysyms", "xcb-xkb", "xcb-render-util", "xcb-image",
+            "xcb-randr", "xcb-shape")
+X11_APT = ("sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-xkb1 libxcb-render-util0 "
+           "libxcb-image0 libxcb-randr0 libxcb-shape0")
+X11_DNF = "sudo dnf install xcb-util-cursor xcb-util-wm xcb-util-keysyms xcb-util-renderutil xcb-util-image libxkbcommon-x11"
+
+
+def missing_x11_libs() -> list[str]:
+    """Linux + X11 (XWayland dahil): Qt'nin xcb eklentisi icin eksik sistem kutuphaneleri. 200 MB indirmeden ONCE soyle."""
+    if not sys.platform.startswith("linux") or not os.environ.get("DISPLAY"):
+        return []
+    import ctypes.util
+    try:
+        return [f"lib{n}" for n in X11_LIBS if ctypes.util.find_library(n) is None]
+    except Exception:  # noqa: BLE001  ldconfig yok vb.: bilinmiyorsa engelleme
+        return []
+
+
+def _viewers_running() -> bool:
+    """Bu ortamdan calisan bir IPCubed viewer'i var mi (guncellemede dosyalari kilitli olur)? psutil yoksa bilinemez: False."""
+    try:
+        import psutil
+    except ImportError:
+        return False
+    for p in psutil.process_iter(["cmdline"]):
+        try:
+            cmd = p.info["cmdline"] or []
+        except psutil.Error:
+            continue
+        if "-m" in cmd and "ipcubed" in cmd and p.pid != os.getpid():
+            return True
+    return False
 
 
 def _long_paths_enabled() -> bool:
@@ -362,15 +408,26 @@ def _long_paths_enabled() -> bool:
 def _spawn_installer(show: bool) -> int:
     cmd = [sys.executable, "-m", "ipcubed.setup_deps", "--install"] + (["--show"] if show else [])
     from .ctl import clean_env
-    kw: dict = {"cwd": str(HERE.parent), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
-                "env": clean_env()}
+    err = open(crash_log_path(), "w", encoding="utf-8", errors="replace")   # kurucu ice aktarmada bile coker ise iz kalsin
+    kw: dict = {"cwd": str(HERE.parent), "stdin": subprocess.DEVNULL, "stdout": err, "stderr": err, "env": clean_env()}
+    try:
+        return _popen_detached(cmd, kw).pid
+    finally:
+        err.close()
+
+
+def crash_log_path() -> Path:
+    return log_path().with_name("install-errors.log")
+
+
+def _popen_detached(cmd, kw) -> subprocess.Popen:
     if sys.platform == "win32":
         flags = 0x00000008 | 0x00000200 | 0x08000000           # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
         try:
-            return subprocess.Popen(cmd, creationflags=flags | 0x01000000, **kw).pid     # BREAKAWAY_FROM_JOB: KiCad'in is nesnesinden cik
+            return subprocess.Popen(cmd, creationflags=flags | 0x01000000, **kw)     # BREAKAWAY_FROM_JOB: KiCad'in is nesnesinden cik
         except OSError:
-            return subprocess.Popen(cmd, creationflags=flags, **kw).pid
-    return subprocess.Popen(cmd, start_new_session=True, **kw).pid
+            return subprocess.Popen(cmd, creationflags=flags, **kw)
+    return subprocess.Popen(cmd, start_new_session=True, **kw)
 
 
 def _kicad_running() -> bool:
@@ -452,13 +509,83 @@ class _Progress:
 
 
 def _pip_version() -> tuple:
-    """Bu ortamdaki pip surumu (ornek (24, 0)); okunamazsa (0,). Linux'ta sistem Python'unun pip'i eski olabilir."""
+    """Bu ortamdaki pip surumu (ornek (24, 0)); okunamazsa (0,). Linux'ta sistem Python'unun pip'i eski olabilir.
+    Alt surec acmadan okunur (yavas degil; kullanici adinda Turkce harf olunca kod sayfasi cozme hatasi da olmaz)."""
     try:
-        out = subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, text=True, timeout=60,
-                             stdin=subprocess.DEVNULL, creationflags=0x08000000 if sys.platform == "win32" else 0).stdout
-        return tuple(int(x) for x in out.split()[1].split(".")[:2])
+        from importlib.metadata import version
+        return tuple(int(x) for x in version("pip").split(".")[:2])
     except Exception:  # noqa: BLE001
         return (0,)
+
+
+# Kullanicinin pip ayarlari bilesenleri BU ortamin disina gondermesin (KiCad kendi pip'ini --isolated calistirir).
+# Dizin/proxy ayarlari (PIP_INDEX_URL, PIP_PROXY, PIP_CERT...) kalir: sirket aglarinda gerekir.
+_PIP_REDIRECT_ENV = ("PIP_TARGET", "PIP_PREFIX", "PIP_ROOT", "PIP_USER", "PIP_REQUIRE_VIRTUALENV", "PIP_SRC", "PIP_EDITABLE")
+
+
+def _pip_env() -> dict:
+    from .ctl import clean_env
+    env = {k: v for k, v in clean_env().items() if k.upper() not in _PIP_REDIRECT_ENV}
+    env["PIP_USER"] = "0"                  # pip.ini'deki "user = true" a karsi (ortam degiskeni yapilandirma dosyasini ezer)
+    return env
+
+
+def _pinned() -> dict[str, str]:
+    """deps.txt: paket adi (normallestirilmis) -> sabit surum (yalniz '==' ile sabitlenenler; ortam isaretleri dikkate alinir)."""
+    import re
+    out = {}
+    for line in DEPS.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        req, _, marker = line.partition(";")
+        m = re.fullmatch(r"([A-Za-z0-9_.\-]+)\s*==\s*([^\s,]+)", req.strip())
+        if not m or (marker.strip() and not _marker_ok(marker.strip())):
+            continue
+        out[re.sub(r"[-_.]+", "-", m.group(1)).lower()] = m.group(2)
+    return out
+
+
+def _marker_ok(marker: str) -> bool:
+    """Basit ortam isaretleri (sys_platform / platform_system =/!=); bilinmeyen isaret: kurulacak varsay."""
+    import platform
+    import re
+    env = {"sys_platform": sys.platform, "platform_system": platform.system()}
+    for key, op, val in re.findall(r"(sys_platform|platform_system)\s*(==|!=)\s*['\"]([^'\"]+)['\"]", marker):
+        if (env[key] == val) != (op == "=="):
+            return False
+    return True
+
+
+def _stale_packages() -> list[str]:
+    """Guncellemede: bu ortama (sys.prefix) daha once kurulmus ve deps.txt'de surumu degismis paketler. --ignore-installed eski
+    surumu silmez (iki surumun dosyalari karisir); bunlar once kaldirilir. Sistem paketlerine dokunulmaz."""
+    import re
+    from importlib.metadata import distributions
+    want = _pinned()
+    prefix = Path(sys.prefix).resolve()
+    stale = []
+    for d in distributions():
+        try:
+            name = re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower()
+            loc = Path(str(d.locate_file(""))).resolve()
+        except Exception:  # noqa: BLE001
+            continue
+        if name in want and d.version != want[name] and prefix in loc.parents:
+            stale.append(name)
+    return sorted(set(stale))
+
+
+def _installed_here(module: str = "PySide6") -> bool:
+    """pip gercekten BU ortama mi kurdu? (pip.ini'de target/prefix varsa baska yere kurup 0 ile cikar.)"""
+    import importlib
+    import importlib.util
+    importlib.invalidate_caches()
+    try:
+        spec = importlib.util.find_spec(module)
+    except (ImportError, ValueError):
+        return False
+    if spec is None or not spec.origin:
+        return False
+    return Path(sys.prefix).resolve() in Path(spec.origin).resolve().parents
 
 
 def _kill_tree(p: subprocess.Popen):
@@ -503,25 +630,56 @@ def _show_progress(prog: _Progress, proc: subprocess.Popen, finished) -> bool:
 
 
 def install(show: bool) -> int:
-    """Arka plan kurucusu: pip ile deps.txt'yi bu sanal ortama kur (ilerleme diyalogu ile); basarida isaret dosyasi + 3D'yi ac,
-    hatada diyalog."""
+    """Arka plan kurucusu. Beklenmeyen her hata (wx, dosya, surec...) kullaniciya gosterilir ve install.log'a yazilir:
+    "Download"a basip hicbir sey gormemek olmasin."""
+    try:
+        return _install(show)
+    except BaseException:  # noqa: BLE001
+        import traceback
+        tb = traceback.format_exc()
+        try:
+            with open(log_path(), "a", encoding="utf-8") as f:
+                f.write(f"\n{time.strftime('%H:%M:%S')} installer error:\n{tb}")
+        except OSError:
+            pass
+        _drop_lock()
+        info(f"Installing IPCubed components failed unexpectedly.\n\n{tb.strip().splitlines()[-1][:400]}\n\n"
+             f"Details: {log_path()}\n\nPress 3D Live again to retry.", error=True)
+        return 1
+
+
+def _install(show: bool) -> int:
+    """pip ile deps.txt'yi bu sanal ortama kur (ilerleme diyalogu ile); basarida isaret dosyasi + 3D'yi ac, hatada diyalog."""
     import threading
     _set_lock("install", os.getpid())
     log = log_path()
     cancelled = False
+    proc = None
     try:
         with open(log, "w", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} IPCubed components -> {sys.prefix}\n")
             f.flush()
-            from .ctl import clean_env
+            pip = [sys.executable, "-m", "pip"]
+            pipv = _pip_version()
+            # --progress-bar raw: diyalog icin, pip 24.1+ (eski pip "Usage" hatasiyla cikar)
+            bar = "raw" if pipv >= (24, 1) else "off"
+            f.write(f"pip {'.'.join(map(str, pipv))}, progress {bar}\n")
+            stale = _stale_packages() if _update() else []
+            if stale:                          # guncelleme: eski surumlerin dosyalari yeni surumlerle karismasin
+                f.write(f"removing old versions: {' '.join(stale)}\n")
+                f.flush()
+                r = subprocess.run(pip + ["uninstall", "-y", "--disable-pip-version-check", *stale], stdout=f,
+                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=_pip_env(),
+                                   creationflags=0x08000000 if sys.platform == "win32" else 0)
+                f.write(f"uninstall exit code {r.returncode}\n")
+                f.flush()
             # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
-            # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin. --progress-bar raw: diyalog icin.
-            bar = "raw" if _pip_version() >= (24, 1) else "off"    # raw: pip 24.1+ (eski pip "Usage" hatasiyla cikar)
-            f.write(f"pip {'.'.join(map(str, _pip_version()))}, progress {bar}\n")
-            proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                                     "--only-binary", ":all:", "--ignore-installed", "--progress-bar", bar, "-r", str(DEPS)],
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=clean_env(),
-                                    text=True, encoding="utf-8", errors="replace", bufsize=1)
+            # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin.
+            proc = subprocess.Popen(pip + ["install", "--no-input", "--disable-pip-version-check",
+                                           "--only-binary", ":all:", "--ignore-installed", "--progress-bar", bar, "-r", str(DEPS)],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=_pip_env(),
+                                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                    creationflags=0x08000000 if sys.platform == "win32" else 0)
             prog = _Progress(download_mb())
             finished = threading.Event()
 
@@ -542,12 +700,23 @@ def install(show: bool) -> int:
             rc = proc.returncode if proc.returncode is not None else proc.wait()
             f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {rc}{' (cancelled)' if cancelled else ''}\n")
         r = subprocess.CompletedProcess(proc.args, rc)
-        if r.returncode == 0 and not cancelled:
+        misplaced = r.returncode == 0 and not cancelled and not _installed_here()
+        if r.returncode == 0 and not cancelled and not misplaced:
             _marker().write_text(json.dumps({"deps": _deps_hash(), "time": time.time()}))
+    except BaseException:
+        if proc is not None:
+            _kill_tree(proc)               # kurucu coktu: pip yarim kalmis ortami yazmaya devam etmesin
+        raise
     finally:
         _drop_lock()                       # diyalogdan ONCE: hata mesaji acikken 3D Live yeniden denesin
     if cancelled:
         return 1                           # kullanici iptal etti: hata diyalogu yok; 3D Live yeniden sorar
+    if misplaced:
+        info("pip reported success, but the components were not installed into KiCad's plugin environment\n"
+             f"({sys.prefix}).\n\nYour pip configuration probably redirects installs (pip.ini / pip.conf with "
+             "\"target\", \"prefix\" or \"user\"). Remove that setting, then press 3D Live again.\n\n"
+             f"Details: {log}", error=True)
+        return 1
     if r.returncode != 0:
         try:                               # pip'in kendi hata satiri (internet, disk, engellenen dosya...): kullanici neyin bozuldugunu gorsun
             errs = [l.strip() for l in log.read_text(encoding="utf-8", errors="replace").splitlines() if l.startswith("ERROR")]

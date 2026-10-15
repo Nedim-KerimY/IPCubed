@@ -45,7 +45,7 @@ def config_dir() -> Path:
 
 
 _VAR = re.compile(r"\$\{([^}]+)\}|\$\(([^)]+)\)")
-_MODEL_EXT = {".step", ".stp", ".wrl", ".wrz"}
+_MODEL_EXT = {".step", ".stp", ".stpz", ".igs", ".iges", ".wrl", ".wrz"}
 _name_index: dict[Path, dict[str, Path]] = {}
 
 
@@ -59,7 +59,9 @@ def kicad_config_dirs() -> list[Path]:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kicad"
     if not base.is_dir():
         return []
-    return sorted((d for d in base.iterdir() if d.is_dir() and d.name[:1].isdigit()), reverse=True)
+    def ver(d: Path):                     # sayisal: metin olarak "9.0" > "10.0" olurdu ve KiCad 9 ayarlari 10'unkileri ezerdi
+        return tuple(int(x) if x.isdigit() else 0 for x in re.split(r"[.\-]", d.name))
+    return sorted((d for d in base.iterdir() if d.is_dir() and d.name[:1].isdigit()), key=ver, reverse=True)
 
 
 @functools.lru_cache(maxsize=1)
@@ -76,18 +78,57 @@ def kicad_path_vars() -> dict[str, str]:
     return out
 
 
+_INDEX_SKIP = {".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv", ".history", "backups"}
+_INDEX_MAX_ENTRIES = 40000        # buyuk depo / OneDrive klasorunde tarama arayuzu saniyelerce dondurmesin
+
+
 def _index_for(root: Path) -> dict[str, Path]:
     idx = _name_index.get(root)
     if idx is None:
         idx = {}
-        try:
-            for p in root.rglob("*"):
-                if p.suffix.lower() in _MODEL_EXT and p.is_file():
-                    idx.setdefault(p.name.lower(), p)
-        except OSError:
-            pass
+        seen = 0
+        for dirpath, dirnames, filenames in os.walk(root, onerror=lambda e: None):
+            dirnames[:] = [d for d in dirnames if d.lower() not in _INDEX_SKIP and not d.startswith(".")]
+            seen += len(filenames) + len(dirnames)
+            for fn in filenames:
+                if os.path.splitext(fn)[1].lower() in _MODEL_EXT:
+                    idx.setdefault(fn.lower(), Path(dirpath) / fn)
+            if seen > _INDEX_MAX_ENTRIES:
+                break
         _name_index[root] = idx
     return idx
+
+
+@functools.lru_cache(maxsize=1)
+def default_model_dirs() -> tuple[Path, ...]:
+    """KiCad'in kendi 3D kutuphanesi: viewer'a KICADn_3DMODEL_DIR ulasmasa da (eski/baska surec ortami) bulunur.
+    Bagli KiCad'in programindan (owner pid) turetilir + bilinen kurulum yerleri."""
+    cands: list[Path] = []
+    try:
+        from .ctl import kicad_pid
+        import psutil
+        pid = kicad_pid()
+        if pid:
+            exe = Path(psutil.Process(pid).exe())
+            cands += [exe.parent.parent / "share" / "kicad" / "3dmodels",                 # Windows: <KiCad>\bin\..
+                      exe.parent.parent / "SharedSupport" / "3dmodels"]                  # macOS: KiCad.app/Contents/MacOS/..
+    except Exception:  # noqa: BLE001
+        pass
+    if sys.platform == "win32":
+        pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "KiCad"
+        try:
+            cands += [d / "share" / "kicad" / "3dmodels" for d in sorted(pf.iterdir(), reverse=True)]
+        except OSError:
+            pass
+    elif sys.platform == "darwin":
+        cands.append(Path("/Applications/KiCad/KiCad.app/Contents/SharedSupport/3dmodels"))
+    else:
+        cands += [Path("/usr/share/kicad/3dmodels"), Path("/usr/local/share/kicad/3dmodels")]
+    out = []
+    for c in cands:
+        if c not in out and c.is_dir():
+            out.append(c)
+    return tuple(out)
 
 
 def resolve_model_path(raw: str, project_dir: Path | None, env: dict[str, str] | None = None,
@@ -116,12 +157,13 @@ def _resolve_exact(raw: str, project_dir: Path | None, env: dict[str, str] | Non
     p = Path(_VAR.sub(sub, raw))
     if p.is_file():
         return p
-    # KiCad surum degiskenleri (KICAD9_3DMODEL_DIR vb.) farkli surumde tanimsiz olabilir
+    # KiCad surum degiskenleri (KICAD9_3DMODEL_DIR vb.) farkli surumde tanimsiz olabilir; hic tanimli degilse kurulumun kendi
+    # 3D kutuphanesi denenir
     if "3DMODEL_DIR" in raw:
-        for k, v in env.items():
-            if k.endswith("3DMODEL_DIR") and v:
-                tail = _VAR.sub("", raw).lstrip("/\\")
-                cand = Path(v) / tail
-                if cand.is_file():
-                    return cand
+        tail = _VAR.sub("", raw).lstrip("/\\")
+        dirs = [Path(v) for k, v in env.items() if k.endswith("3DMODEL_DIR") and v] + list(default_model_dirs())
+        for d in dirs:
+            cand = d / tail
+            if cand.is_file():
+                return cand
     return None

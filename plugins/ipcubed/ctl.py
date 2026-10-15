@@ -199,6 +199,11 @@ def _check_started(p, log: Path, timeout: float = 30.0) -> None:
 def _app_control_block(text: str) -> str:
     """Windows Akilli Uygulama Denetimi / WDAC bir DLL'i engellediyse engellenen modulun adi, yoksa ''.
     Hata metni Windows dilinde gelir: mesaj, sistemin kendi metniyle (FormatMessage) karsilastirilir."""
+    import re
+    # cffi (wgpu) bildirir: "cannot load library '...wgpu_native-release.dll': error 0x11c7" (0x11c7 = 4551, 0x11cc = 4556)
+    cffi = re.search(r"cannot load library '([^']+)': error (0x11c7|0x11cc|4551|4556)\b", text, re.IGNORECASE)
+    if cffi:
+        return Path(cffi.group(1).replace("\\", "/")).name
     if "DLL load failed" not in text and "WinError 4551" not in text:
         return ""
     msgs = ["Application Control policy has blocked this file", "Smart App Control", "WinError 4551"]
@@ -211,7 +216,6 @@ def _app_control_block(text: str) -> str:
                 continue
             if m and "Unknown error" not in m:
                 msgs.append(m)
-    import re
 
     def norm(t):                           # kod sayfasi bozulmalarina dayanikli: yalniz ASCII harf/rakam
         return re.sub(r"[^a-z0-9]", "", t.lower())

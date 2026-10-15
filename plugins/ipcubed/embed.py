@@ -47,6 +47,14 @@ class WinEmbedder:
         self.u.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT,
                                                wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
         self.u.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+        H = wintypes.HWND                         # 64 bit HWND'ler int'e sigmayabilir: imzalar acikca
+        for fn in ("IsWindow", "IsWindowVisible", "IsIconic"):
+            getattr(self.u, fn).argtypes = [H]
+        self.u.GetWindowThreadProcessId.argtypes = [H, ctypes.POINTER(wintypes.DWORD)]
+        self.u.GetForegroundWindow.restype = H
+        self.u.SetWindowPos.argtypes = [H, H, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        self.u.GetClassNameW.argtypes = [H, wintypes.LPWSTR, ctypes.c_int]
+        self.u.GetWindowTextW.argtypes = [H, wintypes.LPWSTR, ctypes.c_int]
         self.top = self.canvas_hwnd = self.tab_hwnd = self.content_hwnd = None
         self.last = {}
         self.tab_widget: QtWidgets.QLabel | None = None
@@ -86,15 +94,39 @@ class WinEmbedder:
         return b.value
 
     def _is_pcb_editor(self, h) -> bool:
-        """PCB duzenleyici: GL canvas + 3 sekmeli Gorsellestirme paneli. (KiCad 10'da kicad.exe icinde de olabilir.)"""
+        """PCB duzenleyici: cizim alani + 3 sekmeli Gorsellestirme paneli (KiCad 10'da kicad.exe icinde de olabilir).
+        Panel gizlenmisse: cizim alani + baslikta kart adi."""
         kids = self._children(h)
-        if not any(self._cls(c) == "wxGLCanvas" for c in kids):
+        if self._canvas_in(h, kids) is None:
             return False
         for c in kids:
             if self._cls(c) == "_wx_SysTabCtl32":
                 if self._send_timeout(c, 0x1304) == 3:              # TCM_GETITEMCOUNT
                     return True
-        return False
+        return bool(self.hint) and self.hint.lower() in self._title(h).lower()
+
+    def _canvas_in(self, top, kids=None):
+        """PCB cizim alani. OpenGL ile: wxGLCanvas. OpenGL yoksa (sanal makine, Uzak Masaustu, eski surucu ya da KiCad'de
+        "yedek grafik"): KiCad yazilim (Cairo) cizimine gecer ve wxGLCanvas olmaz -> cocugu olmayan en buyuk alt pencere."""
+        kids = self._children(top) if kids is None else kids
+        gl = [c for c in kids if self._cls(c) == "wxGLCanvas"]
+        if gl:
+            return max(gl, key=lambda c: self._area(self._rect(c)))
+        tr = self._rect(top)
+        if not tr:
+            return None
+        big = sorted((c for c in kids if self._cls(c).startswith("wx")), key=lambda c: -self._area(self._rect(c)))
+        for c in big[:8]:
+            a = self._area(self._rect(c))
+            if a < 0.2 * tr[2] * tr[3]:
+                break
+            if not self._children(c):                             # yaprak: kap/panel degil, cizim yuzeyi
+                return c
+        return None
+
+    @staticmethod
+    def _area(r) -> int:
+        return r[2] * r[3] if r else 0
 
     def _send_timeout(self, h, msg, wp=0, lp=0, ms=50):
         """KiCad'in pencerelerine mesaj: KiCad UI thread'i mesgulken (buyuk kartta IPC istegi) 3D cizim dongusu beklemesin."""
@@ -138,23 +170,28 @@ class WinEmbedder:
             self.canvas_hwnd = self.tab_hwnd = self.content_hwnd = None
         if not self.top:
             return None
-        if not (self.canvas_hwnd and self.u.IsWindow(self.canvas_hwnd)):
+        if not (self.canvas_hwnd and self.u.IsWindow(self.canvas_hwnd) and self.u.IsWindowVisible(self.canvas_hwnd)):
             kids = self._children(self.top)
-            gl = [c for c in kids if self._cls(c) == "wxGLCanvas"]
-            tabs = [c for c in kids if self._cls(c) == "_wx_SysTabCtl32"]
-            if not gl:
+            tabs = [c for c in kids if self._cls(c) == "_wx_SysTabCtl32" and self._rect(c)]
+            self.canvas_hwnd = self._canvas_in(self.top, kids)
+            if not self.canvas_hwnd:
                 return None
-            self.canvas_hwnd = max(gl, key=lambda c: (lambda r: r[2] * r[3])(self._rect(c)))
-            self.tab_hwnd = None
+            self.tab_hwnd = self.content_hwnd = None
             if tabs:
                 # Gorunum (Appearance) paneli: sagdaki en buyuk sekme kontrolu
-                self.tab_hwnd = max(tabs, key=lambda c: (lambda r: r[3])(self._rect(c)))
-                inner = [c for c in self._children(self.top)
-                         if self._cls(c) == "wxWindowNR" and self._inside(self._rect(c), self._rect(self.tab_hwnd))]
+                self.tab_hwnd = max(tabs, key=lambda c: self._rect(c)[3])
                 tr = self._rect(self.tab_hwnd)
-                inner = [c for c in inner if self._rect(c)[1] > tr[1] + 8 and self._rect(c)[1] < tr[1] + 60]
-                self.content_hwnd = max(inner, key=lambda c: self._rect(c)[2] * self._rect(c)[3]) if inner else None
-        out = {"canvas": self._rect(self.canvas_hwnd)}
+                inner = []
+                for c in kids:
+                    r = self._rect(c)
+                    if r and self._cls(c) == "wxWindowNR" and self._inside(r, tr) and tr[1] + 8 < r[1] < tr[1] + 60:
+                        inner.append((self._area(r), c))
+                self.content_hwnd = max(inner)[1] if inner else None
+        cr = self._rect(self.canvas_hwnd)
+        if not cr:
+            self.canvas_hwnd = None
+            return None
+        out = {"canvas": cr}
         if self.tab_hwnd:
             out["tab"] = self._rect(self.tab_hwnd)
             cr = self._rect(self.content_hwnd) if self.content_hwnd else None
@@ -172,6 +209,9 @@ class WinEmbedder:
         h = self._hwnd(w)
         self.u.SetWindowPos(h, None, rect[0], rect[1], max(1, rect[2]), max(1, rect[3]),
                             self.SWP_NOZORDER | self.SWP_NOACTIVATE | self.SWP_SHOWWINDOW)
+        self._moved_at = __import__("time").monotonic()
+
+    _moved_at = 0.0
 
     # ---------------------------------------------------------------- kisayol / odak
     def _top_ok(self) -> bool:
@@ -226,7 +266,18 @@ class WinEmbedder:
             return False
         if any(g(m) & 0x8000 for m in (0x10, 0x11, 0x12, 0x5B, 0x5C)):       # shift ctrl alt win
             return False
+        if not self._kicad_foreground():          # '3' bindirmenin kendisinde: Qt kisayolu zaten isledi (cift gecis olmasin)
+            return False
         return self.canvas_focused()
+
+    def _kicad_foreground(self) -> bool:
+        fg = self.u.GetForegroundWindow()
+        if not fg or not self.top:
+            return True                            # bilinmiyor: eski davranis
+        pid, top_pid = self.wt.DWORD(), self.wt.DWORD()
+        self.u.GetWindowThreadProcessId(fg, self.ct.byref(pid))
+        self.u.GetWindowThreadProcessId(self.top, self.ct.byref(top_pid))
+        return pid.value == top_pid.value
 
     def focus(self, w: QtWidgets.QWidget):
         """Yeni acilan pencereye klavye odagi ver (arka plan sureci oldugumuz icin Alt hilesi gerekir)."""
@@ -257,12 +308,19 @@ class WinEmbedder:
         return True
 
     def follow(self, canvas) -> bool:
+        """Bindirmeyi canvas'in uzerinde tut. Kapali dongu: KiCad'in dikdortgeni degismese de bindirmenin GERCEK dikdortgeni
+        hedeften saparsa (Qt kendi minimum boyutuna dondurdu, farkli DPI'li monitore gecis -> WM_DPICHANGED...) duzeltilir."""
+        import time
         loc = self._locate()
         if not loc:
             return False
         if loc != self.last:
             self._move(canvas, loc["canvas"])
             self.last = loc
+        elif time.monotonic() - self._moved_at > 0.25:           # duzeltme dongusu: en fazla 4/sn (Qt ile kavga etmesin)
+            actual = self._rect(self._hwnd(canvas))
+            if actual and actual != tuple(loc["canvas"]):
+                self._move(canvas, loc["canvas"])
         return True
 
     def canvas_rect(self):

@@ -757,6 +757,8 @@ class ViewerScene:
                 g.slot_of[(fp.kiid, mi)] = len(g.slots)
                 g.slots.append((fp.kiid, mi))
                 g.matrices.append(model_matrix(fp, mref, self.thickness))
+        if self.missing:                        # hangi modellerin neden gelmedigi gunlukte gorunsun (destek icin)
+            _log(f"bulunamayan 3D modeller ({len(self.missing)}): " + "; ".join(sorted(self.missing)[:30]))
         for g in self.groups.values():          # tam yenilemede onceden yuklenmis modeller aninda yeniden kurulur
             if g.path in self.mesh_data and not g.meshes:
                 self._build_group_mesh(g)
