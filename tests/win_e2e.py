@@ -403,7 +403,14 @@ def run(a):
     check("kicad_opens_board", top is not None)
     if not top:
         return
-    wait(lambda: not any(title(h) == "Load PCB" for h in kicad_windows(p)), 300, 2, "board loading")
+    # board + footprint libraries load slowly in KiCad's software mode on the VM: wait until the board has items
+    quiet = [0]
+
+    def loaded():
+        busy = any(title(h) == "Load PCB" for h in kicad_windows(p))
+        quiet[0] = 0 if busy else quiet[0] + 1
+        return quiet[0] >= 3
+    wait(loaded, 600, 2, "board loading")
     u.ShowWindow(top, 3)
     foreground(top)
     time.sleep(15)
@@ -415,7 +422,7 @@ def run(a):
 
     icon = dest / "icon-light.png"
     found = None
-    for _ in range(24):                       # KiCad may enable the button only after it prepared the plugin's Python
+    for _ in range(60):                       # KiCad may enable the button only after it prepared the plugin's Python
         bx, by, score, sc = find_button(top, icon)
         log(f"button match at ({bx},{by}) score={score:.1f} scale={sc}")
         if score < 25:

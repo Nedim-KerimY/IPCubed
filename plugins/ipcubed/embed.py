@@ -112,6 +112,9 @@ class WinEmbedder:
         gl = [c for c in kids if self._cls(c) == "wxGLCanvas"]
         if gl:
             return max(gl, key=lambda c: self._area(self._rect(c)))
+        cairo = [c for c in kids if self._title(c) == "CairoCanvas"]       # KiCad'in yazilim cizim alaninin pencere adi
+        if cairo:
+            return max(cairo, key=lambda c: self._area(self._rect(c)))
         tr = self._rect(top)
         if not tr:
             return None
