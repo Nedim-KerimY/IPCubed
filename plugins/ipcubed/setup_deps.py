@@ -242,71 +242,135 @@ def _ask_and_install(show: bool) -> bool:
                "This is needed only once. The 3D view opens automatically when it is done."):
         _drop_lock()
         return False
-    _wait_installer(_spawn_installer(show))           # kilit el degistirir: arada bosluk yok
+    if not preflight(mb):
+        _drop_lock()
+        return False
+    _set_lock("install", _spawn_installer(show))       # kilit el degistirir: arada bosluk yok
     return False
 
 
-_PASS_ENV = ("KICAD_API_SOCKET", "KICAD_API_TOKEN", "IPCUBED_KICAD_PID", "IPCUBED_DEBUG")
+# ------------------------------------------------------------------------------ indirmeden once: bu bilgisayarda calisir mi?
+MAX_REL_PATH = 155      # bilesenlerdeki en uzun dosya yolu (site-packages a gore; PySide6 qml: 151), CI testi dogrular
+MIN_PYTHON = (3, 11)    # numpy 2.4 / cadquery-ocp-novtk 8: cp311+ wheel'leri
 
 
-def _terminal(argv: list[str], title: str):
-    """Linux: ilerlemeyi gosterecek bir terminal penceresi komutu (yoksa None: arka planda kurulur)."""
-    from shutil import which
-    for name, mk in (("gnome-terminal", lambda: ["gnome-terminal", f"--title={title}", "--"] + argv),
-                     ("konsole", lambda: ["konsole", "-p", f"tabtitle={title}", "-e"] + argv),
-                     ("xfce4-terminal", lambda: ["xfce4-terminal", f"--title={title}", "-x"] + argv),
-                     ("mate-terminal", lambda: ["mate-terminal", f"--title={title}", "-x"] + argv),
-                     ("kitty", lambda: ["kitty", "--title", title] + argv),
-                     ("alacritty", lambda: ["alacritty", "--title", title, "-e"] + argv),
-                     ("x-terminal-emulator", lambda: ["x-terminal-emulator", "-T", title, "-e"] + argv),
-                     ("xterm", lambda: ["xterm", "-T", title, "-geometry", "110x30", "-e"] + argv)):
-        if which(name):
-            return mk()
-    return None
+def smart_app_control_state() -> int | None:
+    """Windows Akilli Uygulama Denetimi: 0 kapali, 1 ACIK (imzasiz DLL'leri engeller), 2 degerlendirme; Windows degilse None.
+    IPCUBED_FAKE_SAC=1: diyalogu denemek icin acik varsay."""
+    if os.environ.get("IPCUBED_FAKE_SAC"):
+        return int(os.environ["IPCUBED_FAKE_SAC"])
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\CI\Policy") as k:
+            return int(winreg.QueryValueEx(k, "VerifiedAndReputablePolicyState")[0])
+    except OSError:
+        return None
+
+
+SAC_TEXT = ("Windows Smart App Control is turned ON on this PC.\n\n"
+            "It blocks IPCubed's open-source components (Qt, OpenCascade, wgpu...) because they are not code-signed, "
+            "so the 3D view would not start.\n\n"
+            "Please turn it off:\nWindows Security > App & browser control > Smart App Control settings > Off\n\n"
+            "Note: Windows may not let you turn Smart App Control back on without resetting Windows. "
+            "On a company-managed PC, ask your IT administrator instead.\n\n"
+            "Click \"I disabled it\" when you are done.")
+
+
+def _sac_choice(text: str) -> str:
+    """-> 'done' | 'open' | 'cancel'. wx (KiCad'in Python'unda hazir) ile ozel dugme adlari; yoksa standart Windows kutusu."""
+    try:
+        import wx
+        app = wx.App(False) if not wx.App.Get() else None  # noqa: F841
+        dlg = wx.MessageDialog(None, text, TITLE, wx.YES_NO | wx.CANCEL | wx.ICON_WARNING | wx.STAY_ON_TOP)
+        dlg.SetYesNoCancelLabels("I disabled it", "Open Windows Security", "Cancel")
+        r = dlg.ShowModal()
+        dlg.Destroy()
+        return {wx.ID_YES: "done", wx.ID_NO: "open"}.get(r, "cancel")
+    except Exception:  # noqa: BLE001
+        pass
+    import ctypes
+    MB_YESNOCANCEL, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST = 0x3, 0x30, 0x10000, 0x40000
+    r = ctypes.windll.user32.MessageBoxW(None, text + "\n\n(Yes = I disabled it, No = open Windows Security)", TITLE,
+                                         MB_YESNOCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST)
+    return {6: "done", 7: "open"}.get(r, "cancel")
+
+
+def _sac_gate() -> bool:
+    """Akilli Uygulama Denetimi aciksa kullanicidan kapatmasini iste. Kapatildi (ya da hic acik degil) -> True, iptal -> False."""
+    fake = bool(os.environ.get("IPCUBED_FAKE_SAC"))
+    text = SAC_TEXT
+    while smart_app_control_state() == 1:
+        c = _sac_choice(text)
+        if c == "cancel":
+            return False
+        if c == "open":
+            try:
+                os.startfile("windowsdefender://appbrowser")      # Windows Guvenligi > Uygulama ve tarayici denetimi
+            except OSError:
+                pass
+            continue
+        if fake:
+            return True
+        text = "Smart App Control still appears to be ON.\n\n" + SAC_TEXT     # kapatmadan "kapattim" denirse
+    return True
+
+
+def preflight(mb: int | None) -> bool:
+    """Indirmeden once bilinen engeller: Python surumu, Akilli Uygulama Denetimi, disk alani, Windows yol uzunlugu siniri."""
+    if sys.version_info < MIN_PYTHON:
+        info(f"IPCubed needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer, but this KiCad uses Python "
+             f"{sys.version_info[0]}.{sys.version_info[1]} ({sys.executable}).\n\n"
+             "On Linux, KiCad uses the system Python: Ubuntu 22.04 has 3.10. Ubuntu 24.04, Debian 12+ and current Fedora "
+             "work.", error=True)
+        return False
+    if not _sac_gate():
+        return False
+    import shutil
+    need = max(1.5, 3.5 * (mb or 200) / 1000)            # GB: indirme + acilmis paketler (~3x) + pip gecici dosyalari
+    try:
+        free = shutil.disk_usage(sys.prefix).free / 1e9
+    except OSError:
+        free = need
+    if free < need:
+        info(f"There is not enough free disk space for IPCubed's components.\n\n"
+             f"Needed: about {need:.1f} GB, free: {free:.1f} GB on the drive of\n{sys.prefix}\n\n"
+             "Free up some space, then press 3D Live again.", error=True)
+        return False
+    if sys.platform == "win32" and len(str(Path(sys.prefix) / "Lib" / "site-packages")) + 1 + MAX_REL_PATH > 259 \
+            and not _long_paths_enabled():
+        info("The folder KiCad uses for plugin components has a very long path, and Windows long path support is off, "
+             "so some component files could not be written.\n\n"
+             f"Folder: {sys.prefix}\n\n"
+             "Turn on long paths (as administrator, in PowerShell):\n"
+             "New-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem -Name LongPathsEnabled "
+             "-Value 1 -PropertyType DWORD -Force\n\nthen restart Windows and press 3D Live again.", error=True)
+        return False
+    return True
+
+
+def _long_paths_enabled() -> bool:
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as k:
+            return bool(winreg.QueryValueEx(k, "LongPathsEnabled")[0])
+    except OSError:
+        return False
 
 
 def _spawn_installer(show: bool) -> int:
-    """Kurucuyu baslat. Windows: kendi cmd penceresinde, Linux: bulunabilen bir terminalde -> pip ilerlemesi gorunur.
-    Pencere yoksa arka planda (eski davranis). Gerekli ortam degerleri komut satirindan da gecer (terminal sunuculari
-    ortami aktarmayabilir)."""
+    cmd = [sys.executable, "-m", "ipcubed.setup_deps", "--install"] + (["--show"] if show else [])
     from .ctl import clean_env
-    py = Path(sys.executable)
-    if sys.platform == "win32" and py.name.lower() == "pythonw.exe" and py.with_name("python.exe").exists():
-        py = py.with_name("python.exe")                      # konsol penceresi icin konsollu yorumlayici
-    argv = [str(py), "-m", "ipcubed.setup_deps", "--install"] + (["--show"] if show else [])
-    for k in _PASS_ENV:
-        if os.environ.get(k):
-            argv += ["--set", f"{k}={os.environ[k]}"]
-    env = clean_env()
+    kw: dict = {"cwd": str(HERE.parent), "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+                "env": clean_env()}
     if sys.platform == "win32":
-        kw: dict = {"cwd": str(HERE.parent), "env": env}
-        flags = 0x00000010 | 0x00000200                      # CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP
+        flags = 0x00000008 | 0x00000200 | 0x08000000           # DETACHED | NEW_PROCESS_GROUP | NO_WINDOW
         try:
-            return subprocess.Popen(argv + ["--console"], creationflags=flags | 0x01000000, **kw).pid   # BREAKAWAY_FROM_JOB
+            return subprocess.Popen(cmd, creationflags=flags | 0x01000000, **kw).pid     # BREAKAWAY_FROM_JOB: KiCad'in is nesnesinden cik
         except OSError:
-            return subprocess.Popen(argv + ["--console"], creationflags=flags, **kw).pid
-    quiet: dict = {"cwd": str(HERE.parent), "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
-                   "stderr": subprocess.DEVNULL, "start_new_session": True}
-    term = _terminal(argv + ["--console"], "IPCubed: downloading components") if os.environ.get("DISPLAY") or \
-        os.environ.get("WAYLAND_DISPLAY") else None
-    if term:
-        try:
-            return subprocess.Popen(term, **quiet).pid
-        except OSError:
-            pass
-    return subprocess.Popen(argv, **quiet).pid
-
-
-def _wait_installer(pid: int, timeout: float = 20.0):
-    """Kurucu kilidi kendisi alana kadar 'dialog' kilidini tut: terminal istemcisi hemen cikabilir, arada ikinci bir 3D Live
-    tiklamasi yeni bir diyalog acmasin. Kurucu baslamadiysa kilidi baslatilan surece devret."""
-    t_end = time.monotonic() + timeout
-    while time.monotonic() < t_end:
-        cur = _read_lock()
-        if cur is not None and cur[0] == "install":
-            return
-        time.sleep(0.25)
-    _set_lock("install", pid)
+            return subprocess.Popen(cmd, creationflags=flags, **kw).pid
+    return subprocess.Popen(cmd, start_new_session=True, **kw).pid
 
 
 def _kicad_running() -> bool:
@@ -328,74 +392,180 @@ def _kicad_running() -> bool:
     return False
 
 
-def _console_title(t: str):
+# ------------------------------------------------------------------------------ indirme ilerlemesi
+_NICE = {"pyside6_essentials": "Qt (PySide6)", "pyside6": "Qt (PySide6)", "shiboken6": "Qt (Shiboken)",
+         "cadquery_ocp_novtk": "OpenCascade", "cadquery_ocp": "OpenCascade", "wgpu": "wgpu (GPU)", "pygfx": "pygfx",
+         "numpy": "NumPy", "matplotlib": "Matplotlib", "shapely": "Shapely", "pillow": "Pillow"}
+_UNIT = {"bytes": 1, "byte": 1, "kB": 1000, "MB": 1000 ** 2, "GB": 1000 ** 3}      # pip boyutlari 1000 tabanli
+
+
+class _Progress:
+    """pip ciktisindan (--progress-bar raw: 'Progress N of M') toplam indirme ilerlemesi. Toplam: dep_sizes.json tahmini."""
+
+    def __init__(self, total_mb):
+        self.total = (total_mb or 0) * 1000 ** 2
+        self.done = 0                      # biten dosyalarin baytlari
+        self.cur = self.cur_total = 0      # suren dosya
+        self.pending = 0                   # suren dosyanin "Downloading x (boyut)" satirindaki boyutu
+        self.name = ""
+        self.phase = "prepare"             # prepare -> download -> install
+
+    def feed(self, line: str):
+        import re
+        line = line.strip()
+        m = re.match(r"Progress (\d+) of (\d+)", line)
+        if m:
+            self.cur, self.cur_total = int(m.group(1)), int(m.group(2))
+            return
+        m = re.match(r"(Downloading|Using cached) (\S+) \(([\d.]+) (\w+)\)", line)
+        if m and not m.group(2).endswith(".metadata"):
+            self._finish()
+            size = int(float(m.group(3)) * _UNIT.get(m.group(4), 1))
+            if m.group(1) == "Using cached":
+                self.done += size
+            else:
+                self.pending, self.phase = size, "download"
+                base = m.group(2).split("-")[0].lower()
+                self.name = _NICE.get(base, base)
+        elif line.startswith("Installing collected packages"):
+            self._finish()
+            self.phase = "install"
+
+    def _finish(self):
+        if self.pending or self.cur_total:
+            self.done += max(self.pending, self.cur_total)
+        self.pending = self.cur = self.cur_total = 0
+
+    def fraction(self) -> float:
+        got = self.done + self.cur
+        if got > self.total * 0.98:        # tahmin kucuk kaldi (yeni surumler buyumus): cubuk %98'de takilmasin
+            self.total = int(got * 1.08)
+        return min(0.99, got / self.total) if self.total else 0.0
+
+    def message(self) -> str:
+        if self.phase == "install":
+            return "Installing components...\nThis can take a minute."
+        if self.phase == "prepare":
+            return "Preparing the download..."
+        mb = (self.done + self.cur) / 1000 ** 2
+        return f"Downloading {self.name}...\n{mb:.0f} of ~{self.total / 1000 ** 2:.0f} MB"
+
+
+def _pip_version() -> tuple:
+    """Bu ortamdaki pip surumu (ornek (24, 0)); okunamazsa (0,). Linux'ta sistem Python'unun pip'i eski olabilir."""
+    try:
+        out = subprocess.run([sys.executable, "-m", "pip", "--version"], capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL, creationflags=0x08000000 if sys.platform == "win32" else 0).stdout
+        return tuple(int(x) for x in out.split()[1].split(".")[:2])
+    except Exception:  # noqa: BLE001
+        return (0,)
+
+
+def _kill_tree(p: subprocess.Popen):
+    """pip'i durdur. Windows: sanal ortamin python.exe'si asil yorumlayiciyi ALT surec olarak baslatir -> agaci oldur."""
+    if p.poll() is not None:
+        return
     if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.kernel32.SetConsoleTitleW(t)
-        except Exception:  # noqa: BLE001
-            pass
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       creationflags=0x08000000)
     else:
-        sys.stdout.write(f"\033]0;{t}\007")
+        p.terminate()
 
 
-def install(show: bool, console: bool = False) -> int:
-    """Kurucu: pip ile deps.txt'yi bu sanal ortama kur; basarida isaret dosyasi + 3D'yi ac, hatada diyalog.
-    console: kendi penceresinde calisiyor -> pip ilerlemesi gorunur, ayni cikti --log ile install.log'a da yazilir."""
+def _show_progress(prog: _Progress, proc: subprocess.Popen, finished) -> bool:
+    """wx ilerleme diyalogu (KiCad'in Python'unda hazir; Qt henuz kurulmadi). Iptal edildiyse True. wx yoksa diyalogsuz bekler."""
+    try:
+        import wx
+    except Exception:  # noqa: BLE001  wx yok (bazi Linux kurulumlari): eski davranis, sessiz kurulum
+        finished.wait()
+        return False
+    app = wx.App(False)  # noqa: F841
+    dlg = wx.ProgressDialog(TITLE, "Preparing the download...\n", maximum=1000,
+                            style=wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME | wx.PD_SMOOTH | wx.PD_AUTO_HIDE)
+    dlg.SetSize(wx.Size(max(dlg.GetSize().width, 440), dlg.GetSize().height))
+    dlg.Raise()
+    cancelled = False
+    try:
+        while not finished.wait(0.1):
+            if prog.phase == "install":
+                ok, _ = dlg.Pulse(prog.message())
+            else:
+                f = prog.fraction()
+                ok, _ = dlg.Update(int(f * 1000), prog.message() + (f"  ({f * 100:.0f}%)" if prog.phase == "download" else ""))
+            if not ok:
+                cancelled = True
+                _kill_tree(proc)
+                finished.wait(10)
+                break
+    finally:
+        dlg.Destroy()
+    return cancelled
+
+
+def install(show: bool) -> int:
+    """Arka plan kurucusu: pip ile deps.txt'yi bu sanal ortama kur (ilerleme diyalogu ile); basarida isaret dosyasi + 3D'yi ac,
+    hatada diyalog."""
+    import threading
     _set_lock("install", os.getpid())
     log = log_path()
-    from .ctl import clean_env
-    # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
-    # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin
-    pip = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "--only-binary", ":all:",
-           "--ignore-installed", "-r", str(DEPS)]
+    cancelled = False
     try:
         with open(log, "w", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} IPCubed components -> {sys.prefix}\n")
-        if console:
-            _console_title("IPCubed: downloading components")
-            mb = download_mb()
-            print("IPCubed is downloading its components" + (f" (about {mb} MB)" if mb else "") + ".")
-            print("This window closes by itself when it is done, and the 3D view opens.\n", flush=True)
-            r = subprocess.run(pip + ["--log", str(log)], env=clean_env())
-        else:
-            with open(log, "a", encoding="utf-8") as f:
-                r = subprocess.run(pip + ["--progress-bar", "off"], stdout=f, stderr=subprocess.STDOUT,
-                                   stdin=subprocess.DEVNULL, env=clean_env())
-        with open(log, "a", encoding="utf-8") as f:
-            f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {r.returncode}\n")
-        if r.returncode == 0:
+            f.flush()
+            from .ctl import clean_env
+            # --ignore-installed: KiCad'in ortami sistem paketlerini de gorur (--system-site-packages); hepsi bu ortama kurulur ki
+            # sistemdeki baska surumler (ya da sonradan yukseltilenler) viewer'i bozmasin. --progress-bar raw: diyalog icin.
+            bar = "raw" if _pip_version() >= (24, 1) else "off"    # raw: pip 24.1+ (eski pip "Usage" hatasiyla cikar)
+            f.write(f"pip {'.'.join(map(str, _pip_version()))}, progress {bar}\n")
+            proc = subprocess.Popen([sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
+                                     "--only-binary", ":all:", "--ignore-installed", "--progress-bar", bar, "-r", str(DEPS)],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=clean_env(),
+                                    text=True, encoding="utf-8", errors="replace", bufsize=1)
+            prog = _Progress(download_mb())
+            finished = threading.Event()
+
+            def pump():
+                try:
+                    for line in proc.stdout:
+                        prog.feed(line)
+                        if not line.startswith("Progress "):     # ham ilerleme satirlari gunlugu sisirmesin
+                            f.write(line)
+                            f.flush()
+                    proc.wait()
+                finally:
+                    finished.set()
+
+            threading.Thread(target=pump, daemon=True).start()
+            cancelled = _show_progress(prog, proc, finished)
+            finished.wait()
+            rc = proc.returncode if proc.returncode is not None else proc.wait()
+            f.write(f"\n{time.strftime('%H:%M:%S')} pip exit code {rc}{' (cancelled)' if cancelled else ''}\n")
+        r = subprocess.CompletedProcess(proc.args, rc)
+        if r.returncode == 0 and not cancelled:
             _marker().write_text(json.dumps({"deps": _deps_hash(), "time": time.time()}))
     finally:
         _drop_lock()                       # diyalogdan ONCE: hata mesaji acikken 3D Live yeniden denesin
+    if cancelled:
+        return 1                           # kullanici iptal etti: hata diyalogu yok; 3D Live yeniden sorar
     if r.returncode != 0:
-        if console:
-            print("\nDownloading failed. Details:", log, flush=True)
-        info(f"Downloading IPCubed components failed.\n\nDetails: {log}\n\n"
+        try:                               # pip'in kendi hata satiri (internet, disk, engellenen dosya...): kullanici neyin bozuldugunu gorsun
+            errs = [l.strip() for l in log.read_text(encoding="utf-8", errors="replace").splitlines() if l.startswith("ERROR")]
+        except OSError:
+            errs = []
+        why = f"{errs[-1][:400]}\n\n" if errs else ""
+        info(f"Downloading IPCubed components failed.\n\n{why}Details: {log}\n\n"
              "Check your internet connection, then press 3D Live again to retry.", error=True)
         return r.returncode
     from .ctl import launch, send
     if not _kicad_running():                # indirme surerken KiCad kapatildi: sahipsiz viewer baslatma (sonraki 3D Live acar)
-        if console:
-            print("\nDone. KiCad was closed: press 3D Live next time to open the 3D view.", flush=True)
-            time.sleep(4)
         return 0
-    if console:
-        print("\nDone. Opening the 3D view...", flush=True)
     if not send("ping", timeout=0.5):
         launch(*(["--show"] if show else []))
-    if console:
-        time.sleep(1.5)
     return 0
 
 
 if __name__ == "__main__":
     if "--install" in sys.argv:
-        args = sys.argv[1:]
-        for i, a in enumerate(args):                   # --set KEY=VALUE: terminal penceresine aktarilmayan ortam degerleri
-            if a == "--set" and i + 1 < len(args) and "=" in args[i + 1]:
-                k, v = args[i + 1].split("=", 1)
-                if k in _PASS_ENV:
-                    os.environ[k] = v
-        raise SystemExit(install("--show" in args, console="--console" in args))
+        raise SystemExit(install("--show" in sys.argv))
     print("ready" if ready() else "missing", download_mb(), "MB")

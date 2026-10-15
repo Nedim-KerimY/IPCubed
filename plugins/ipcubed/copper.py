@@ -6,6 +6,7 @@ Her bakir mesh'in vertex'leri bir `tag` (ag id'si) tasir: ileride ag/iz vurgulam
 from __future__ import annotations
 
 import math
+import dataclasses
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -142,6 +143,29 @@ def _reconcile(arr_new, arr_prev, q, x, y, ang):
     return exp
 
 
+def _recenter(arr, x, y, ang, size, offset):
+    """Onceki kayit yokken (ilk yukleme) bayat poligonu yakala: poligon pad konumunu hic kapsamiyorsa KiCad eski konumdaki sekli
+    dondurmustur (viewer yeniden acilinca/onbellek silinince de surer). Sekli pad konumuna tasir; pad boyutuna gore 90 derece
+    donmusse cevirir. size/offset: bakir katmani boyutu ve ofseti (mm, pad yerel ekseninde)."""
+    global _stale_fixed
+    if arr is None or len(arr) < 3 or not size[0] or not size[1]:
+        return arr
+    import math
+    a = math.radians(ang)
+    c, s = math.cos(a), math.sin(a)
+    exp_c = np.array([x + offset[0] * c + offset[1] * s, y - offset[0] * s + offset[1] * c])
+    cur_c = _center(arr)
+    if float(np.abs(cur_c - exp_c).max()) <= max(size) / 2 + 0.05:
+        return arr                           # pad konumunu kapsiyor: taze
+    _stale_fixed += 1
+    W, H = abs(size[0] * c) + abs(size[1] * s), abs(size[0] * s) + abs(size[1] * c)     # beklenen sinir kutusu
+    w, h = arr.max(0) - arr.min(0)
+    rel = arr - cur_c
+    if abs(w - H) + abs(h - W) < abs(w - W) + abs(h - H) - 0.01:
+        rel = np.c_[rel[:, 1], -rel[:, 0]]   # 90 derece (sinir kutusu dik)
+    return rel + exp_c
+
+
 def fetch_tracks(board, ids: set, nid) -> dict:
     """Tum izlar -> {katman: (N,6) x1,y1,x2,y2,kalinlik,ag}. Yaylar kisa dogru parcalarina bolunur."""
     tr: dict[int, list] = {}
@@ -196,19 +220,34 @@ def fetch_vias(board, ids: set, nid) -> ViaData:
                    np.array(vc, np.int8).reshape(-1, 2), np.array(vh, bool))
 
 
-def fetch_pads(board, ids: set, nid, prev: "CopperData | None" = None):
-    """-> (PadRec listesi, footprint sira haritasi)"""
+def fetch_pads(board, ids: set, nid, prev: "CopperData | None" = None, sigs: dict | None = None):
+    """-> (PadRec listesi, footprint sira haritasi). sigs: pad KIID -> ham pad verisi hash'i (cagiran saklar). Verilirse ve onceki
+    kayit varsa yalniz DEGISEN pad'lerin sekli KiCad'den istenir (3400 pad'lik kartta ~0.9 sn yerine birkac ms); digerleri onceki
+    (zaten duzeltilmis) poligonlari kullanir."""
     global _stale_fixed
+    import hashlib
     pads = board.get_pads()
+    old = {q.kiid: q for q in prev.pads if q.kiid} if prev is not None else {}
+    new_sigs = {p.id.value: hashlib.blake2b(p.proto.SerializeToString(), digest_size=8).digest() for p in pads}
+    if sigs is not None and old:
+        need = [i for i, p in enumerate(pads) if p.id.value not in old or sigs.get(p.id.value) != new_sigs[p.id.value]]
+    else:
+        need = list(range(len(pads)))
+    if sigs is not None:
+        sigs.clear()
+        sigs.update(new_sigs)
     polys = {}
     shape_layers = (("front", F_CU), ("back", B_CU), ("inner", ids - {F_CU, B_CU} and min(ids - {F_CU, B_CU}) or F_CU))
+    sub = [pads[i] for i in need]
     for key, L in shape_layers:
-        try:
-            polys[key] = list(board.get_pad_shapes_as_polygons(pads, L))
-        except Exception:
-            polys[key] = [None] * len(pads)
+        got = [None] * len(sub)
+        if sub:
+            try:
+                got = list(board.get_pad_shapes_as_polygons(sub, L))
+            except Exception:
+                pass
+        polys[key] = dict(zip(need, got))
     _stale_fixed = 0
-    old = {q.kiid: q for q in prev.pads if q.kiid} if prev is not None else {}
     fp_index = dict(prev.fp_index) if prev is not None else {}     # sira kalici: mesh etiketlerindeki sahip kodu degismesin
     out = []
 
@@ -226,11 +265,22 @@ def fetch_pads(board, ids: set, nid, prev: "CopperData | None" = None):
         px_, py_, pang = p.position.x * NM, p.position.y * NM, ps.angle.degrees
         fp_id = p.parent.value if hasattr(p.parent, "value") else str(p.parent)
         fp_index.setdefault(fp_id, len(fp_index))
-        shp = [_pw_outline(polys["front"][i]), _pw_outline(polys["back"][i]), _pw_outline(polys["inner"][i])]
         q = old.get(p.id.value)
+        if i not in polys["front"] and q is not None:          # degismemis pad: onceki poligonlar aynen
+            out.append(dataclasses.replace(q, net=nid(p.net)))
+            continue
+        shp = [_pw_outline(polys["front"].get(i)), _pw_outline(polys["back"].get(i)), _pw_outline(polys["inner"].get(i))]
         if q is not None and q.layers == layers:          # onceki kayitla karsilastir: bayat KiCad poligonlarini duzelt
             shp = [_reconcile(shp[0], q.front, q, px_, py_, pang), _reconcile(shp[1], q.back, q, px_, py_, pang),
                    _reconcile(shp[2], q.inner, q, px_, py_, pang)]
+        # her durumda son kontrol: pad KONUMU KiCad'den hep taze gelir, bayat olan yalniz sekil. Sekil konumu kapsamiyorsa (onceki
+        # kayit yok = ilk yukleme, ya da onceki kayit da bayat/yaris: tasima mesajindan once gelen kontrol) konuma tasinir.
+        try:
+            cl = ps.copper_layers[0]
+            sz, off = (cl.size.x * NM, cl.size.y * NM), (cl.offset.x * NM, cl.offset.y * NM)
+            shp = [_recenter(a, px_, py_, pang, sz, off) for a in shp]
+        except Exception:  # noqa: BLE001
+            pass
         out.append(PadRec(
             px_, py_, pang, layers,
             shp[0], shp[1], shp[2],
@@ -278,13 +328,13 @@ def zones_equal(a, b) -> bool:
     return True
 
 
-def fetch_copper(board, copper_ids: list[int], prev: "CopperData | None" = None) -> CopperData:
+def fetch_copper(board, copper_ids: list[int], prev: "CopperData | None" = None, pad_sigs: dict | None = None) -> CopperData:
     cd = CopperData()
     nid, names = make_nid(prev.net_names if prev is not None else None)
     ids = set(copper_ids)
     cd.tracks = fetch_tracks(board, ids, nid)
     cd.vias = fetch_vias(board, ids, nid)
-    cd.pads, cd.fp_index = fetch_pads(board, ids, nid, prev)
+    cd.pads, cd.fp_index = fetch_pads(board, ids, nid, prev, pad_sigs)
     cd.zones = fetch_zones(board, ids, nid)
     cd.net_names = names
     return cd

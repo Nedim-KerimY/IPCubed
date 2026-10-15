@@ -45,6 +45,73 @@ def kicad_pid() -> int | None:
         return None
 
 
+def _parent_and_name(pid: int):
+    """(ust surec, ad) ya da None. Yalnizca standart kutuphane: bilesenler (psutil) henuz kurulmamis olabilir."""
+    if sys.platform == "win32":
+        return _win_procs().get(pid)
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        name = Path(f"/proc/{pid}/comm").read_text().strip()
+        return int(stat[stat.rindex(")") + 2:].split()[1]), name
+    except (OSError, ValueError, IndexError):
+        pass
+    try:                                                    # macOS / diger POSIX
+        out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True, text=True).stdout.split(None, 1)
+        return int(out[0]), Path(out[1].strip()).name
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _win_procs() -> dict:
+    """pid -> (ust pid, exe adi): Toolhelp32 anlik goruntusu."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+    k32 = ctypes.windll.kernel32
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)              # TH32CS_SNAPPROCESS
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return {}
+    out = {}
+    try:
+        e = PROCESSENTRY32W()
+        e.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k32.Process32FirstW(snap, ctypes.byref(e))
+        while ok:
+            out[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile)
+            ok = k32.Process32NextW(snap, ctypes.byref(e))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def find_kicad_ancestor(names=("kicad", "pcbnew"), max_hops: int = 6) -> int | None:
+    """3D Live'a basilan KiCad sureci: ust surec zincirinde adi kicad/pcbnew ile baslayan ilk surec.
+    os.getppid() yetmez: Windows'ta sanal ortamin python.exe'si asil yorumlayiciyi alt surec olarak baslatan bir
+    yonlendiricidir, yani ust surec KiCad degil o yonlendiricidir. Bulunamazsa None (herhangi bir KiCad)."""
+    pid = os.getppid()
+    for _ in range(max_hops):
+        info = _parent_and_name(pid)
+        if info is None:
+            return None
+        ppid, name = info
+        n = name.lower()
+        if n.startswith(names) and "cli" not in n:
+            return pid
+        if ppid in (0, pid):
+            return None
+        pid = ppid
+    return None
+
+
 def send(cmd: str, timeout: float = 2.0) -> bool:
     try:
         port = int(port_path().read_text().strip())
@@ -157,7 +224,9 @@ def _app_control_block(text: str) -> str:
 
 def main(cmd: str = "toggle") -> int:
     if os.environ.get("KICAD_API_SOCKET"):        # eklenti olarak calisiyoruz: ust surec bu 3D Live'a basilan KiCad
-        os.environ.setdefault("IPCUBED_KICAD_PID", str(os.getppid()))
+        kp = find_kicad_ancestor()
+        if kp is not None:
+            os.environ.setdefault("IPCUBED_KICAD_PID", str(kp))
     if send(cmd):
         return 0
     if cmd == "quit":
