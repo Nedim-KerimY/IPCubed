@@ -409,12 +409,20 @@ def run(a):
         shot("no-button")
         return
     t_click = time.monotonic()
-    foreground(top)
-    click(*found)
-    log("clicked 3D Live")
+    seen = set()
+    for attempt in range(3):
+        # a modal KiCad dialog (board/library loading) swallows the click: wait for it, then click; retry if nothing starts
+        wait(lambda: not any(title(h) in ("Load PCB", "Loading") or cls(h) == "#32770" for h in kicad_windows(p)),
+             300, 2, "KiCad modal dialogs")
+        foreground(top)
+        time.sleep(0.5)
+        click(*found)
+        log(f"clicked 3D Live (attempt {attempt + 1})")
+        if wait(lambda: ipcubed_procs("any") or ipcubed_dialogs(), 60, 1, "toggle.py after click"):
+            break
+        shot("click-no-effect")
 
     # 4. download dialog
-    seen = set()
     dlg = None
     for _ in range(3):
         dlg = wait(lambda: next((h for h in ipcubed_dialogs() if h not in seen), None), 300, 1, "IPCubed dialog")
