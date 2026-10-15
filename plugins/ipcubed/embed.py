@@ -322,9 +322,19 @@ class WinEmbedder:
             self.last = loc
         elif time.monotonic() - self._moved_at > 0.25:           # duzeltme dongusu: en fazla 4/sn (Qt ile kavga etmesin)
             actual = self._rect(self._hwnd(canvas))
-            if actual and actual != tuple(loc["canvas"]):
-                self._move(canvas, loc["canvas"])
+            target = tuple(loc["canvas"])
+            mins = canvas.minimumSize() * self._dpr(canvas)
+            fits = target[2] >= mins.width() and target[3] >= mins.height()   # canvas Qt minimumundan kucukse Qt zaten buyutur
+            if actual and actual != target and fits:
+                self._move(canvas, target)
         return True
+
+    @staticmethod
+    def _dpr(w) -> float:
+        try:
+            return float(w.devicePixelRatioF()) or 1.0
+        except Exception:  # noqa: BLE001
+            return 1.0
 
     def canvas_rect(self):
         return self.last.get("canvas") if self.last else None

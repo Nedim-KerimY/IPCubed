@@ -78,6 +78,7 @@ class ViewerShell(QtCore.QObject):
         self.cfg = Settings.load()
         # vsync kapali: kare suresi 16.7 ms'yi biraz asinca 60'tan 30 FPS'e dusmesin (ekran 60 Hz)
         self.canvas = QRenderWidget(vsync=False)
+        self.canvas.setMinimumSize(320, 240)
         self.core = ViewerCore(self.canvas, self.cfg)
         self.settings_win = SettingsWindow(self.cfg, self._on_setting, self._rebuild_mask, self._on_models_hidden)
         self.core.on_status = self.settings_win.set_status
@@ -92,6 +93,7 @@ class ViewerShell(QtCore.QObject):
         fl.setSpacing(0)
         fl.addWidget(self.settings_win)
         fl.addWidget(self.canvas, 1)
+        self.frame.setMinimumSize(560, 300)   # bindirmede de gerekli: minimumsuz pencere 0 boyutla acilir ve wgpu hic cizmez
         self.frame.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.frame.setStyleSheet("ViewerFrame { background: #2b2b2b; }")
         self.frame.closed.connect(self._on_frame_closed)
@@ -110,10 +112,9 @@ class ViewerShell(QtCore.QObject):
         if not self.embedded:
             self.container = self.frame           # bagimsiz mod: kendi penceresi
             self.frame.setWindowTitle(TITLE)
-            self._window_min_size(True)
             self.frame.resize(1400, 900)
         else:
-            self.embedder.prepare(self.frame)     # bindirme: boyut KiCad'in canvas'indan gelir; Qt minimumu onu ezmesin
+            self.embedder.prepare(self.frame)
 
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._context_menu)
@@ -265,18 +266,12 @@ class ViewerShell(QtCore.QObject):
         self.settings_win.hide()
         self.core.request_draw()
 
-    def _window_min_size(self, on: bool):
-        """Kendi penceresi olunca makul minimum; bindirmede yok (kucuk KiCad penceresinde canvas'tan buyuk tasmasin)."""
-        self.canvas.setMinimumSize(*((320, 240) if on else (0, 0)))
-        self.frame.setMinimumSize(*((560, 300) if on else (0, 0)))
-
     # ------------------------------------------------------------ harici pencere
     def go_external(self):
         """Viewport'u KiCad'den ayir: normal, boyutlandirilabilir pencere (canli senkron surer)."""
         if not (self.embedded and self.is_open and not self._external):
             return
         board = getattr(self.core, "board_name", "") or ""
-        self._window_min_size(True)
         self.embedder.make_external(self.frame, f"IPCubed — {board}" if board else TITLE)
         self._external = True
         self.frame.activateWindow()
@@ -287,7 +282,6 @@ class ViewerShell(QtCore.QObject):
         if not self._external:
             return
         self._external = False
-        self._window_min_size(False)
         self.embedder.make_embedded(self.frame)
         if not self.embedder.place(self.frame):
             self._finish_hide()
