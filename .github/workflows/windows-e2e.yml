@@ -20,7 +20,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scale: [100, 125]
+        include:
+          - { scale: 100, gl: mesa }    # software OpenGL: KiCad uses its OpenGL canvas like on a PC with a GPU
+          - { scale: 125, gl: mesa }
+          - { scale: 100, gl: none }    # no OpenGL: KiCad falls back to its software (Cairo) canvas
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -58,6 +61,21 @@ jobs:
           "KiCad: $kicad"
           "KICAD_DIR=$kicad" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Remove-Item kicad-setup.exe -ErrorAction SilentlyContinue
+      - name: Software OpenGL for KiCad (Mesa llvmpipe; the VM has no GPU)
+        if: matrix.gl == 'mesa'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = gh api repos/pal1000/mesa-dist-win/releases/latest | ConvertFrom-Json
+          $asset = $rel.assets | Where-Object { $_.name -match 'release-msvc\.7z$' } | Select-Object -First 1
+          "Mesa: $($asset.name)"
+          curl.exe -sSL -o mesa.7z $asset.browser_download_url
+          7z x mesa.7z -omesa -y | Out-Null
+          foreach ($f in "opengl32.dll", "libgallium_wgl.dll", "libglapi.dll") {
+            if (Test-Path "mesa\x64\$f") { Copy-Item "mesa\x64\$f" "$env:KICAD_DIR\bin\" -Force; "copied $f" }
+          }
+          "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Build the plugin package
         run: python plugin/tools/build_pcm_zip.py dist
       - name: Driver dependencies
@@ -70,5 +88,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: win-e2e-${{ matrix.scale }}
+          name: win-e2e-${{ matrix.scale }}-${{ matrix.gl }}
           path: e2e-out

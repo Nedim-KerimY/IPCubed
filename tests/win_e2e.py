@@ -186,6 +186,9 @@ def main_window(proc):
     return None
 
 
+_seen_kicad: set = set()
+
+
 def handle_kicad_dialogs(proc) -> bool:
     """Setup wizard / first-run dialogs of KiCad itself (never IPCubed's). True if something was dismissed."""
     done = False
@@ -195,11 +198,13 @@ def handle_kicad_dialogs(proc) -> bool:
             log("KiCad setup wizard -> Cancel")
             press(h, ["Cancel"])
             done = True
-        elif cls(h) == "#32770" or t in ("Confirmation", "Warning", "Error", "Information"):
+        elif t in ("Confirmation", "Warning", "Error", "Information"):   # never progress dialogs ("Load PCB": Cancel aborts loading)
             txt = dialog_text(h)
-            log(f"KiCad dialog '{t}': {txt[:300]}")
-            shot("kicad-dialog")
-            press(h, ["Yes", "OK", "Close", "Continue"]) or press(h, ["Cancel", "No"])
+            if txt not in _seen_kicad:
+                _seen_kicad.add(txt)
+                log(f"KiCad dialog '{t}': {txt[:300]}")
+                shot("kicad-dialog")
+            press(h, ["Yes", "OK", "Close", "Continue"])
             done = True
     return done
 
@@ -381,6 +386,7 @@ def run(a):
     check("kicad_opens_board", top is not None)
     if not top:
         return
+    wait(lambda: not any(title(h) == "Load PCB" for h in kicad_windows(p)), 300, 2, "board loading")
     u.ShowWindow(top, 3)
     foreground(top)
     time.sleep(15)
