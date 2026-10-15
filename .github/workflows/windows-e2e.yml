@@ -43,9 +43,21 @@ jobs:
           $ProgressPreference = 'SilentlyContinue'
           curl.exe -sSL -o kicad-setup.exe "https://github.com/KiCad/kicad-source-mirror/releases/download/$env:KICAD_VERSION/kicad-$env:KICAD_VERSION-x86_64.exe"
           (Get-Item kicad-setup.exe).Length / 1MB
-          Start-Process .\kicad-setup.exe -ArgumentList '/S' -Wait
-          Get-ChildItem "C:\Program Files\KiCad"
-          Remove-Item kicad-setup.exe
+          $p = Start-Process .\kicad-setup.exe -ArgumentList '/S', '/allusers' -PassThru -Wait
+          "installer exit code: $($p.ExitCode)"
+          # the NSIS installer can hand over to a child process: wait until no installer process is left and pcbnew exists
+          $roots = "C:\Program Files\KiCad", "$env:LOCALAPPDATA\Programs\KiCad"
+          for ($i = 0; $i -lt 180; $i++) {
+            $exe = Get-ChildItem $roots -Recurse -Filter pcbnew.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            $busy = Get-Process | Where-Object { $_.Path -like "*kicad-setup*" -or $_.Name -like "Au_*" -or $_.Name -like "*nsis*" }
+            if ($exe -and -not $busy) { break }
+            Start-Sleep 5
+          }
+          if (-not $exe) { Get-Process | Sort-Object Name | Format-Table Name, Id, Path -AutoSize | Out-String -Width 250; throw "pcbnew.exe not found" }
+          $kicad = Split-Path (Split-Path $exe.FullName)
+          "KiCad: $kicad"
+          "KICAD_DIR=$kicad" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Remove-Item kicad-setup.exe -ErrorAction SilentlyContinue
       - name: Build the plugin package
         run: python plugin/tools/build_pcm_zip.py dist
       - name: Driver dependencies
@@ -54,7 +66,7 @@ jobs:
         shell: pwsh
         run: |
           $zip = (Get-ChildItem dist\IPCubed-*-pcm.zip | Select-Object -First 1).FullName
-          python driver\tests\win_e2e.py --kicad "C:\Program Files\KiCad\$($env:KICAD_VERSION.Substring(0,4))" --zip $zip --out e2e-out --scale ${{ matrix.scale }}
+          python driver\tests\win_e2e.py --kicad "$env:KICAD_DIR" --zip $zip --out e2e-out --scale ${{ matrix.scale }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
