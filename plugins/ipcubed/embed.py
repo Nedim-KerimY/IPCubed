@@ -9,6 +9,8 @@ import sys
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from .log import _log
+
 
 def make_embedder():
     e = _make_embedder()
@@ -278,16 +280,24 @@ class WinEmbedder:
     def hotkey_pressed(self, vk: int = 0x33) -> bool:
         """'3' (ust sira) yeni basildi, Shift/Ctrl/Alt yok ve canvas odakta ise True (kenar algilama)."""
         g = self.u.GetAsyncKeyState
-        down = bool(g(vk) & 0x8000)
-        edge = down and not self._key_down
+        st = g(vk)
+        down = bool(st & 0x8000)
+        # bit 0: son sorgudan beri basildi. Dongumuz gecikirse (or. KiCad'in arayuz thread'i baska bir eklenti yuzunden mesgul)
+        # kisa bir basis iki sorgu arasinda baslayip bitebilir: o da sayilir
+        edge = not self._key_down and (down or bool(st & 1))
         self._key_down = down
         if not edge:
             return False
         if any(g(m) & 0x8000 for m in (0x10, 0x11, 0x12, 0x5B, 0x5C)):       # shift ctrl alt win
+            _log("tus 3: degistirici tusla -> yok sayildi")
             return False
         if not self._kicad_foreground():          # '3' bindirmenin kendisinde: Qt kisayolu zaten isledi (cift gecis olmasin)
+            _log("tus 3: on planda KiCad yok -> yok sayildi")
             return False
-        return self.canvas_focused()
+        if not self.canvas_focused():
+            _log("tus 3: PCB tuvali odakta degil -> yok sayildi")
+            return False
+        return True
 
     def _kicad_foreground(self) -> bool:
         fg = self.u.GetForegroundWindow()
