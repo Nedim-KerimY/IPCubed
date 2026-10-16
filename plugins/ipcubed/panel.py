@@ -269,7 +269,8 @@ class SettingsWindow(QtWidgets.QWidget):
     # ------------------------------------------------------------------ katman listesi
     def _build_misc_checks(self):
         g = QtWidgets.QGroupBox("Components"); gl = QtWidgets.QVBoxLayout(g)
-        for key, label in (("show_comp_top", "Top components"), ("show_comp_bottom", "Bottom components"), ("show_pads", "Pads / vias / holes")):
+        for key, label in (("show_comp_top", "Top components"), ("show_comp_bottom", "Bottom components"),
+                           ("show_dnp", "DNP components (do not populate)"), ("show_pads", "Pads / vias / holes")):
             cb = QtWidgets.QCheckBox(label); cb.setChecked(getattr(self.cfg, key))
             cb.toggled.connect(lambda v, k=key: self._set(k, v)); gl.addWidget(cb)
         self.layers_lay.addWidget(g)

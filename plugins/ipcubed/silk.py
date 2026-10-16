@@ -28,6 +28,7 @@ TTF_EM = 1.0                 # TrueType: KiCad yazi yuksekligi ~ em
 TTF_CAP = 0.72
 
 
+EDGE_CUTS = 47
 BOTTOM_LAYERS = {34, 41, 39, 37}       # alt yuz katmanlari (yazi aynalama icin)
 
 
@@ -38,6 +39,7 @@ class SilkData:
     # bakir ve mask katmanlarindaki grafikler (logo, cutout, bakir yazi/sekil): layer_id -> liste
     extra_shapes: dict = field(default_factory=dict)
     extra_texts: dict = field(default_factory=dict)
+    edges: list = field(default_factory=list)       # footprint'lerin Edge.Cuts sekilleri (konnektor kesikleri): kart konturuna eklenir
     skipped: int = 0
 
 
@@ -91,6 +93,31 @@ def _shape_items(proto_shape, px=0, py=0, c=1, s=0, rot=False):
     return out
 
 
+def edge_polylines(items) -> list[list[tuple[float, float]]]:
+    """Footprint Edge.Cuts sekil tuple'lari -> kart konturu polyline'lari (kicad_source._outline_from_shapes ile ayni bicim)."""
+    from .copper import _arc_from_three
+    out = []
+    for it in items:
+        try:
+            kind = it[0]
+            if kind == "seg":
+                out.append([(it[1], it[2]), (it[3], it[4])])
+            elif kind == "arc":
+                seg = _arc_from_three(it[1], it[2], it[3], 0.0, 0, step=0.15)
+                out.append([(float(seg[0][0]), float(seg[0][1]))] + [(float(r[2]), float(r[3])) for r in seg])
+            elif kind == "circle":
+                cx, cy, r = it[1], it[2], it[3]
+                out.append([(cx + r * math.cos(2 * math.pi * i / 64), cy + r * math.sin(2 * math.pi * i / 64)) for i in range(65)])
+            elif kind == "poly":
+                for ring in [it[1]] + list(it[2]):
+                    pts = [(float(x), float(y)) for x, y in ring]
+                    if len(pts) >= 3:
+                        out.append(pts + [pts[0]])
+        except Exception:
+            continue
+    return out
+
+
 # ------------------------------------------------------------------------------ yazilar
 _MARKUP = re.compile(r"[~^_]\{([^{}]*)\}")
 
@@ -101,6 +128,14 @@ def clean_markup(s: str) -> str:
     while prev != s:
         prev, s = s, _MARKUP.sub(r"\1", s)
     return s
+
+
+def _knockout(t) -> bool:
+    """BoardText.knockout (alan: Field.text icinde de BoardText)."""
+    try:
+        return bool(t.proto.knockout)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _text_dict(t, value, side):
@@ -119,6 +154,7 @@ def _text_dict(t, value, side):
         halign=h, valign=v, font=(at.font_name or ""),
         bold=bool(at.bold), italic=bool(at.italic), mirrored=bool(at.mirrored) or side == "bottom",
         line_spacing=at.line_spacing or 1.0,
+        knockout=_knockout(t),
     )
 
 
@@ -141,6 +177,12 @@ def fp_silk_part(f, extra) -> SilkData:
         val = f.value_field.text.value
         for it in f.definition.items:
             lay = int(it.layer) if hasattr(it, "layer") else None
+            if lay == EDGE_CUTS and type(it).__name__ == "BoardShape":
+                try:
+                    sd.edges.extend(_shape_items(it.proto.shape))
+                except Exception:
+                    sd.skipped += 1
+                continue
             b = _bucket(sd, lay, extra) if lay is not None else None
             if b is None or type(it).__name__ != "BoardShape":
                 continue
@@ -176,6 +218,7 @@ def _merge_part(sd: SilkData, p: SilkData):
         sd.extra_shapes.setdefault(k, []).extend(v)
     for k, v in p.extra_texts.items():
         sd.extra_texts.setdefault(k, []).extend(v)
+    sd.edges.extend(p.edges)
     sd.skipped += p.skipped
 
 
@@ -220,7 +263,7 @@ def layer_geometry(sd: SilkData, lid: int):
         try:
             g = text_geometry(t)
             if g is not None and not g.is_empty:
-                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if t["stroke"] > 0 else g)
+                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if t["stroke"] > 0 and not t.get("knockout") else g)
         except Exception:
             continue
     if not geoms:
@@ -378,6 +421,15 @@ def text_geometry(t: dict):
     f = {1: 0.0, 2: 0.5, 3: 1.0}.get(t["valign"], 0.5)
     dy = -(top_y + f * (bot_y - top_y)) + (t["sy"] * BOTTOM_LIFT if t["valign"] == 3 else 0.0)
     g = affinity.translate(g, 0, dy)
+    if t.get("knockout"):
+        # KiCad "knockout": yazi kutusu dolu basilir, harfler bosluk kalir. Kenar payi KiCad'deki gibi
+        # max(kalinlik, yukseklik/9). Harfler kalem kalinligiyla kalinlastirilir (build_silk bu geometriyi bir daha kalinlastirmaz).
+        from shapely.geometry import box
+        pen = max(t["stroke"], 0.0)
+        glyphs = g.buffer(max(pen, 0.05) * 0.18, quad_segs=1) if pen > 0 else g
+        m = max(pen, t["sy"] / 9.0)
+        x0, y0, x1, y1 = glyphs.bounds
+        g = box(x0 - m, y0 - m, x1 + m, y1 + m).difference(glyphs)
     g = affinity.scale(g, 1, -1, origin=(0, 0))          # font Y yukari -> KiCad Y asagi
     if t["mirrored"]:
         g = affinity.scale(g, -1, 1, origin=(0, 0))
@@ -432,7 +484,7 @@ def build_silk(sd: SilkData, side: str, z: float, outline=None):
         try:
             g = text_geometry(t)
             if g is not None and not g.is_empty:
-                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if t["stroke"] > 0 else g)
+                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if t["stroke"] > 0 and not t.get("knockout") else g)
         except Exception:
             continue
     if not geoms:

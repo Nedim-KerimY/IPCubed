@@ -38,6 +38,7 @@ class Settings:
     show_comp_top: bool = True
     show_comp_bottom: bool = True
     show_pads: bool = True
+    show_dnp: bool = False                   # "Do not populate" footprint modelleri (KiCad 3D gorunumu de gizler)
     show_inner_copper: bool = False          # ic bakir katmanlari varsayilan gizli (hizli)
     # renkler
     mask_color: str = "#14a152"

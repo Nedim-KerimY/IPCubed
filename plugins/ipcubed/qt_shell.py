@@ -150,6 +150,8 @@ class ViewerShell(QtCore.QObject):
             self.core.rig.set_projection(self.cfg.projection == "orthographic", self.cfg.fov_3d)
         elif key in ("fov_3d", "pitch_3d"):
             self.rig_refresh()
+        elif key == "show_dnp":
+            self.core.vs.set_hidden(self.core.vs.hidden)       # ornek matrisleri yeniden (DNP gizle/goster)
         self._schedule_save()
         self.core.request_draw()
 

@@ -28,6 +28,7 @@ class FootprintData:
     angle: float        # derece
     bottom: bool
     models: list[ModelRef] = field(default_factory=list)
+    dnp: bool = False   # "Do not populate": KiCad'in 3D gorunumu gibi varsayilan gizli (ayarlardan acilir)
 
 
 @dataclass
@@ -118,6 +119,13 @@ def _outline_from_shapes(shapes, edge_layer) -> list[list[tuple[float, float]]]:
     return lines
 
 
+def _outline(board_shapes, sd) -> list[list[tuple[float, float]]]:
+    """Kart konturu: kart duzeyi Edge.Cuts + footprint'lerin icindeki Edge.Cuts (konnektor kesikleri, yuvalar; KiCad ikisini birlestirir)."""
+    from kipy.board_types import BoardLayer
+    from .silk import edge_polylines
+    return _outline_from_shapes(board_shapes, BoardLayer.BL_Edge_Cuts) + (edge_polylines(sd.edges) if sd is not None else [])
+
+
 def _footprint_data(f) -> FootprintData:
     from kipy.board_types import BoardLayer
     models = []
@@ -138,6 +146,7 @@ def _footprint_data(f) -> FootprintData:
         angle=f.orientation.degrees,
         bottom=f.layer == BoardLayer.BL_B_Cu,
         models=models,
+        dnp=bool(getattr(f.attributes, "do_not_populate", False)),
     )
 
 
@@ -261,15 +270,16 @@ class KiCadSource:
         cd = fetch_copper(b, [l.layer_id for l in stack.copper()], pad_sigs=self._pad_sigs) if with_copper else None
         if cd is not None:
             cd.tent_rules = (tent_f, tent_b)
+        silk = self._silk(b, raw_fps, [l.layer_id for l in stack.copper()] + [41, 42], fp_hash) if with_copper else None
         return BoardSnapshot(
             name=b.name,
             project_dir=proj,
             thickness=stack.thickness,
-            outline_lines=_outline_from_shapes(shapes, BoardLayer.BL_Edge_Cuts),
+            outline_lines=_outline(shapes, silk),
             footprints=fps,
             copper=cd,
             stack=stack,
-            silk=self._silk(b, raw_fps, [l.layer_id for l in stack.copper()] + [41, 42], fp_hash) if with_copper else None,
+            silk=silk,
             mask_expansion=mask_exp,
             embedded=embedded,
             poses=dict(self._poses),
@@ -370,8 +380,7 @@ class KiCadSource:
         if prev.copper is not None:
             cd.tent_rules = prev.copper.tent_rules
         sd = fetch_silk(b, [], ids + [41, 42], cache=self._fp_silk)
-        from kipy.board_types import BoardLayer
-        return dataclasses.replace(prev, copper=cd, silk=sd, outline_lines=_outline_from_shapes(b.get_shapes(), BoardLayer.BL_Edge_Cuts), poses=poses)
+        return dataclasses.replace(prev, copper=cd, silk=sd, outline_lines=_outline(b.get_shapes(), sd), poses=poses)
 
     def refresh_partial(self, prev: BoardSnapshot, diff: list):
         """Yalniz DEGISEN kategoriyi cek (diff: geom_signature indeksleri 0 iz, 1 via, 2 zone, 3 pad, 4 sekil, 5 yazi) ve hangi
@@ -460,7 +469,7 @@ class KiCadSource:
         if board_silk or fp_silk or self._silk_dirty:
             from .silk import fetch_silk
             sd = fetch_silk(b, [], stack_ids + [41, 42], cache=self._fp_silk)
-            outline = _outline_from_shapes(b.get_shapes(), BoardLayer.BL_Edge_Cuts)
+            outline = _outline(b.get_shapes(), sd)
             plan["full"] = outline != prev.outline_lines
             plan["silk"] = True
             plan["silk_sides"] = ("top", "bottom") if board_silk else tuple(sorted(self._dirty_sides)) or ("top", "bottom")
