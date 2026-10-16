@@ -154,9 +154,12 @@ def _recenter(arr, x, y, ang, size, offset):
     a = math.radians(ang)
     c, s = math.cos(a), math.sin(a)
     exp_c = np.array([x + offset[0] * c + offset[1] * s, y - offset[0] * s + offset[1] * c])
+    lo, hi = arr.min(0), arr.max(0)
+    if np.all(exp_c >= lo - 0.05) and np.all(exp_c <= hi + 0.05):
+        return arr                           # sekil pad konumunu kapsiyor: taze (merkez degil: custom pad'in capasi kenarda olabilir)
+    if float(max(hi - lo)) > max(size) * 1.5 + 0.1:
+        return arr                           # custom / pad boyutundan buyuk sekil: capaya gore yeri bilinemez, KiCad'e guven
     cur_c = _center(arr)
-    if float(np.abs(cur_c - exp_c).max()) <= max(size) / 2 + 0.05:
-        return arr                           # pad konumunu kapsiyor: taze
     _stale_fixed += 1
     W, H = abs(size[0] * c) + abs(size[1] * s), abs(size[0] * s) + abs(size[1] * c)     # beklenen sinir kutusu
     w, h = arr.max(0) - arr.min(0)
