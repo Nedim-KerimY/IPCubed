@@ -173,9 +173,15 @@ def _check_started(p, log: Path, timeout: float = 30.0) -> None:
     if p.poll() in (None, 0):              # hala aciliyor (yavas disk) ya da zaten calisan kopyaya devretti
         return
     try:
-        tail = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-6:]
+        full = log.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        tail = []
+        full = ""
+    if "IPCUBED_GPU_UNSUPPORTED" in full:           # viewer kendi nedenini yazdi: kullanilabilir GPU yok
+        from .setup_deps import info
+        info("The IPCubed 3D view cannot start on this computer.\n\n"
+             + full.split("IPCUBED_GPU_UNSUPPORTED", 1)[1].strip()[:1500] + f"\n\nDetails: {log}", error=True)
+        return
+    tail = full.strip().splitlines()[-6:]
     text = "\n".join(tail)
     hint = ""
     blocked = _app_control_block(text)

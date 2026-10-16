@@ -510,16 +510,20 @@ class KiCadSource:
     def _refresh_fp_silk(self) -> bool:
         """Degisen footprint'lerin silk/bakir/maske ozetini yenile (yalniz onlar Python nesnesine cevrilir). -> degisen var mi."""
         from kipy.board_types import FootprintInstance
-        from .silk import fp_silk_part
+        from .silk import attach_kicad_shapes, expand_dicts, fp_silk_part
         seen, changed = set(), False
+        pending: list = []                               # degisen footprint'lerin yazilari: tek KiCad istegiyle cizdirilir
         resp, self._fp_resp = self._fp_resp, None    # geometri kontrolunun az once cektigi yanit (varsa)
         for k, h, p in self._raw_footprints(resp):
             seen.add(k)
             if self._fp_hash.get(k) == h and k in self._fp_silk:
                 continue
             self._fp_hash[k] = h
-            self._note_fp_silk(k, fp_silk_part(FootprintInstance(proto=p), self._silk_extra))
+            self._note_fp_silk(k, fp_silk_part(FootprintInstance(proto=p), self._silk_extra, pending))
             changed = True
+        if pending:
+            expand_dicts(self.board, [d for d, _, _ in pending])
+            attach_kicad_shapes(self.board, pending)
         for k in set(self._fp_silk) - seen:              # silinen footprint'ler
             self._note_fp_silk(k, None)
             self._fp_hash.pop(k, None)
@@ -579,11 +583,11 @@ class KiCadSource:
                 k = KIID(); k.value = s
                 kids.append(k)
             for f in self.board.get_items_by_id(kids):
-                from .silk import fp_silk_part
+                from .silk import fp_silk_part_shaped
                 h = hashlib.blake2b(f.proto.SerializeToString(), digest_size=8).hexdigest()
                 if self._fp_hash.get(f.id.value) != h or f.id.value not in self._fp_silk:
                     self._fp_hash[f.id.value] = h        # tam footprint kontrolu bunu degismis saymasin (ayni hash yontemi)
-                    self._note_fp_silk(f.id.value, fp_silk_part(f, self._silk_extra))
+                    self._note_fp_silk(f.id.value, fp_silk_part_shaped(f, self._silk_extra, self.board))
                 fd = _footprint_data(f)
                 self._poses[fd.kiid] = (fd.x, fd.y, fd.angle, fd.bottom)
                 out.append(fd)

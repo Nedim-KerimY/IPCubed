@@ -83,7 +83,27 @@ class ViewerCore:
             self.sync.request_full.set()
 
     # ---------------------------------------------------------------- cizim
+    gpu_note = ""                    # yazilim cizicisi notu (gpu.SOFTWARE_NOTE): 3D acilinca kisa sure sol altta
+    on_render_error = None           # ust uste cizim hatasi: kabuk kullaniciya nedenini soyler
+    _draw_errors = 0
+    _shown_at = 0.0
+
     def _draw(self):
+        try:
+            self._draw_frame()
+            self._draw_errors = 0
+        except Exception:  # noqa: BLE001  GPU/surucu hatasi: sessizce bos pencere kalmasin
+            self._draw_errors += 1
+            if self._draw_errors == 1:
+                import traceback
+                from .log import _log
+                tb = traceback.format_exc()
+                print(tb, flush=True)                  # viewer.log
+                _log("cizim hatasi:\n" + tb[-1500:])
+            if self._draw_errors == 3 and self.on_render_error is not None:
+                self.on_render_error()
+
+    def _draw_frame(self):
         w, h = self.canvas.get_logical_size()
         if h > 0:
             self.rig.set_aspect(w / h)
@@ -642,7 +662,11 @@ class ViewerCore:
         kinds = self.vs.loading_kinds()
         if kinds:
             return "Loading " + ", ".join(kinds)
-        return "Reading changes from KiCad" if self._fetching else ""
+        if self._fetching:
+            return "Reading changes from KiCad"
+        if self.gpu_note and time.perf_counter() - self._shown_at < 15.0:
+            return self.gpu_note
+        return ""
 
     def _update_busy_label(self, w, h):
         text = getattr(self, "_busy_shown", "")
@@ -707,6 +731,7 @@ class ViewerCore:
 
     # ---------------------------------------------------------------- mod gecisi
     def enter_3d(self, animate: bool = True):
+        self._shown_at = time.perf_counter()
         self.visible = True
         if animate and self.cfg.anim_ms > 0:
             self.rig.set_start_2d()

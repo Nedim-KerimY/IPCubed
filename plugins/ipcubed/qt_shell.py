@@ -38,6 +38,15 @@ def kicad_running() -> bool:
     return False
 
 
+def _gpu_fatal(why: str, tried):
+    """Kullanilabilir GPU yok: isaretli hata mesajini viewer.log'a yazip cik. ctl._check_started bunu okuyup diyalogda gosterir."""
+    from .gpu import UNSUPPORTED_TEXT
+    _log(f"GPU kullanilamiyor: {why}; adaptorler: {tried}")
+    print(f"IPCUBED_GPU_UNSUPPORTED\n{UNSUPPORTED_TEXT}\n\nAdapters found: {', '.join(tried) or 'none'}\n{why}", flush=True)
+    import os
+    os._exit(3)
+
+
 def _debug_log_hint() -> str:
     import os
     import tempfile
@@ -76,10 +85,22 @@ class ViewerShell(QtCore.QObject):
         from .settings import Settings
 
         self.cfg = Settings.load()
+        from . import gpu
+        self.gpu = gpu.choose()                    # renderer'dan ONCE: desteklenen GPU yoksa yazilim cizicisi
+        if self.gpu.adapter is None:
+            _gpu_fatal(self.gpu.error, self.gpu.tried)
         # vsync kapali: kare suresi 16.7 ms'yi biraz asinca 60'tan 30 FPS'e dusmesin (ekran 60 Hz)
         self.canvas = QRenderWidget(vsync=False)
         self.canvas.setMinimumSize(320, 240)
-        self.core = ViewerCore(self.canvas, self.cfg)
+        try:
+            self.core = ViewerCore(self.canvas, self.cfg)
+        except Exception as e:  # noqa: BLE001  cihaz olusturulamadi (surucu): sessiz cokmek yerine nedenini yaz
+            import traceback
+            traceback.print_exc()
+            _gpu_fatal(f"{type(e).__name__}: {e}", [self.gpu.description])
+        if self.gpu.software:
+            self.core.gpu_note = gpu.SOFTWARE_NOTE
+        self.core.on_render_error = self._render_error
         self.settings_win = SettingsWindow(self.cfg, self._on_setting, self._rebuild_mask, self._on_models_hidden)
         self.core.on_status = self.settings_win.set_status
         self.core.on_snapshot = self._on_snapshot
@@ -468,6 +489,12 @@ class ViewerShell(QtCore.QObject):
             else:
                 self._closing = False         # bagimsiz modda pencere kalir (2D gorunumde)
                 self._shown = True
+
+    def _render_error(self):
+        from . import gpu
+        _log("ust uste cizim hatasi -> kullaniciya bildirildi")
+        self._notice("The 3D view cannot draw with this graphics adapter:\n" + self.gpu.description + "\n\n" + gpu.UNSUPPORTED_TEXT
+                     + f"\n\nDetails: {config_dir() / 'viewer.log'}")
 
     def _notice(self, text: str):
         """Engellemeyen bilgi kutusu (viewer dongusu durmasin), KiCad'in ustunde."""

@@ -148,7 +148,7 @@ def _text_dict(t, value, side):
             h = {1: 3, 3: 1}.get(h, h)
             v = {1: 3, 3: 1}.get(v, v)
     return dict(
-        value=clean_markup(value), x=t.position.x * NM, y=t.position.y * NM, angle=angle,
+        value=clean_markup(value), raw=value, x=t.position.x * NM, y=t.position.y * NM, angle=angle,
         sx=at.size.x * NM, sy=at.size.y * NM,
         stroke=(at.stroke_width * NM) if hasattr(at, "stroke_width") else 0.15,
         halign=h, valign=v, font=(at.font_name or ""),
@@ -168,9 +168,9 @@ def _bucket(sd: SilkData, lay: int, extra: set):
     return None
 
 
-def fp_silk_part(f, extra) -> SilkData:
+def fp_silk_part(f, extra, pending: list | None = None) -> SilkData:
     """Tek footprint'in silk/bakir/mask katmanlarindaki sekil ve yazilari (mutlak koordinat). Ham footprint nesnesi (agir) saklanmaz,
-    yalnizca bu hafif ozet saklanir."""
+    yalnizca bu hafif ozet saklanir. pending: (yazi sozlugu, Text protobuf, kutu mu) -> KiCad'in kendi fontuyla cizdirilecekler."""
     sd = SilkData()
     try:
         ref = f.reference_field.text.value
@@ -202,7 +202,10 @@ def fp_silk_part(f, extra) -> SilkData:
                     continue
                 v = (txt.value or "").replace("${REFERENCE}", ref).replace("${VALUE}", val)
                 if v.strip():
-                    b[1].append(_text_dict(txt, v, "bottom" if lay in BOTTOM_LAYERS else "top"))
+                    d = _text_dict(txt, v, "bottom" if lay in BOTTOM_LAYERS else "top")
+                    b[1].append(d)
+                    if pending is not None:
+                        pending.append((d, txt.proto.text, False))
             except Exception:
                 sd.skipped += 1
     except Exception:
@@ -229,10 +232,11 @@ def fetch_silk(board, footprints, extra_layers=(), cache: dict | None = None) ->
     (ham footprint nesneleri ~400 MB tuttugundan saklanmaz)."""
     extra = set(extra_layers)
     sd = SilkData()
+    pending: list = []
     if footprints:
         parts = []
         for f in footprints:
-            p = fp_silk_part(f, extra)
+            p = fp_silk_part(f, extra, pending)
             parts.append(p)
             if cache is not None:
                 cache[f.id.value] = p
@@ -250,9 +254,60 @@ def fetch_silk(board, footprints, extra_layers=(), cache: dict | None = None) ->
                     sd.skipped += 1
     except Exception:
         pass
-    _board_texts(board, sd, extra)
+    _board_texts(board, sd, extra, pending)
     _expand_variables(board, sd)
+    attach_kicad_shapes(board, pending)
     return sd
+
+
+def fp_silk_part_shaped(f, extra, board) -> SilkData:
+    """fp_silk_part + yazilar KiCad'in fontuyla (canli tasima / duzenleme yolu)."""
+    pending: list = []
+    p = fp_silk_part(f, extra, pending)
+    expand_dicts(board, [d for d, _, _ in pending])
+    attach_kicad_shapes(board, pending)
+    return p
+
+
+def attach_kicad_shapes(board, pending):
+    """Yazilari KiCad'e cizdir (GetTextAsShapes: KiCad'in kendi stroke fontu / secilen TrueType font, gerber ile ayni).
+    Sonuc her yazi sozlugune 'kshapes' (sekil tuple'lari, dunya koord.) olarak eklenir; alinamazsa yaklasik font kalir."""
+    if not pending:
+        return
+    try:
+        from kipy.proto.common.commands import base_commands_pb2 as bc
+        client = board._kicad
+    except Exception:  # noqa: BLE001
+        return
+    for i in range(0, len(pending), 300):
+        chunk = pending[i:i + 300]
+        cmd = bc.GetTextAsShapes()
+        for d, proto, box in chunk:
+            inner = bc.TextOrTextBox()
+            q = inner.textbox if box else inner.text
+            q.CopyFrom(proto)
+            q.text = d.get("raw", q.text)                # degiskenleri genisletilmis metin (isaretleme KiCad'de cizilir)
+            if not box and q.attributes.keep_upright:      # tahtada KiCad yaziyi okunur yonde tutar; API bunu yapmaz: duzeltilmis aci
+                q.attributes.angle.value_degrees = d["angle"]
+                q.attributes.horizontal_alignment = d["halign"]
+                q.attributes.vertical_alignment = d["valign"]
+                q.attributes.keep_upright = False
+            cmd.text.append(inner)
+        try:
+            reply = client.send(cmd, bc.GetTextAsShapesResponse)
+        except Exception as e:  # noqa: BLE001  eski KiCad / baglanti: yaklasik font
+            from .log import _log
+            _log(f"yazi sekilleri KiCad'den alinamadi ({type(e).__name__}: {e}); yaklasik font kullaniliyor")
+            return
+        for (d, _, _), entry in zip(chunk, reply.text_with_shapes):
+            items = []
+            for gs in entry.shapes.shapes:
+                try:
+                    items.extend(_shape_items(gs))
+                except Exception:  # noqa: BLE001
+                    continue
+            if items:
+                d["kshapes"] = items
 
 
 def layer_geometry(sd: SilkData, lid: int):
@@ -263,7 +318,7 @@ def layer_geometry(sd: SilkData, lid: int):
         try:
             g = text_geometry(t)
             if g is not None and not g.is_empty:
-                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if t["stroke"] > 0 and not t.get("knockout") else g)
+                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if _thicken(t) else g)
         except Exception:
             continue
     if not geoms:
@@ -272,7 +327,12 @@ def layer_geometry(sd: SilkData, lid: int):
     return None if u.is_empty else u
 
 
-def _board_texts(board, sd: SilkData, extra=()):
+def _thicken(t: dict) -> bool:
+    """Yaklasik fontun ince cizgilerini kalem kalinligina yaklastir; KiCad sekilleri ve knockout zaten dogru kalinlikta."""
+    return t["stroke"] > 0 and not t.get("knockout") and not t.get("kshapes")
+
+
+def _board_texts(board, sd: SilkData, extra=(), pending: list | None = None):
     extra = set(extra)
     try:
         from kipy.proto.common.types import KiCadObjectType as KOT
@@ -280,7 +340,10 @@ def _board_texts(board, sd: SilkData, extra=()):
             lay = int(t.layer)
             b = _bucket(sd, lay, extra)
             if b is not None and t.attributes.visible and (t.value or "").strip():
-                b[1].append(_text_dict(t, t.value, "bottom" if lay in BOTTOM_LAYERS else "top"))
+                d = _text_dict(t, t.value, "bottom" if lay in BOTTOM_LAYERS else "top")
+                b[1].append(d)
+                if pending is not None:
+                    pending.append((d, t.proto.text, False))
     except Exception:
         sd.skipped += 1
     try:                                    # metin kutulari: metni kutunun hizalama kosesine koy
@@ -306,7 +369,11 @@ def _board_texts(board, sd: SilkData, extra=()):
             tt.attributes = _AttrsView(at)
             tt.position = type("P", (), {"x": x / NM, "y": y / NM})()
             if p.text.strip():
-                b[1].append(_text_dict(tt, p.text, side))
+                d = _text_dict(tt, p.text, side)
+                d["knockout"] = False
+                b[1].append(d)
+                if pending is not None:
+                    pending.append((d, p, True))
     except Exception:
         sd.skipped += 1
 
@@ -329,15 +396,22 @@ class _AttrsView:
 
 def _expand_variables(board, sd: SilkData):
     """Cozulmemis ${VAR}'lari kart baglaminda genislet (REVISION, TITLE...)."""
-    items = [t for side in list(sd.texts.values()) + list(sd.extra_texts.values()) for t in side if "${" in t["value"]]
+    if not expand_dicts(board, [t for side in list(sd.texts.values()) + list(sd.extra_texts.values()) for t in side]):
+        sd.skipped += 1
+
+
+def expand_dicts(board, dicts) -> bool:
+    items = [t for t in dicts if "${" in t["value"]]
     if not items:
-        return
+        return True
     try:
-        vals = board.expand_text_variables([t["value"] for t in items])
+        vals = board.expand_text_variables([t.get("raw", t["value"]) for t in items])
         for t, v in zip(items, vals):
+            t["raw"] = v
             t["value"] = clean_markup(v)
     except Exception:
-        sd.skipped += 1
+        return False
+    return True
 
 
 # ------------------------------------------------------------------------------ geometri
@@ -392,9 +466,21 @@ def _glyph_geom(line: str, em: float, prop):
 
 
 def text_geometry(t: dict):
-    """Yazi -> shapely geometri (KiCad dunya koord., Y asagi)."""
+    """Yazi -> shapely geometri (KiCad dunya koord., Y asagi). KiCad'in cizdigi sekiller varsa (kshapes) birebir onlar."""
     from shapely import affinity
     from shapely.ops import unary_union
+    if t.get("kshapes"):
+        g = unary_union(shape_geometry(t["kshapes"]))
+        if g.is_empty or not t.get("knockout"):
+            return g
+        # knockout: yazi yonunde kutu (yazinin yerel cercevesinde sinir kutusu + pay), harfler oyulur
+        from shapely.geometry import box
+        c, s = _rot(t["angle"])
+        loc = affinity.affine_transform(affinity.translate(g, -t["x"], -t["y"]), [c, -s, s, c, 0, 0])
+        m = max(t["stroke"], t["sy"] / 9.0)
+        x0, y0, x1, y1 = loc.bounds
+        k = box(x0 - m, y0 - m, x1 + m, y1 + m).difference(loc)
+        return affinity.affine_transform(k, [c, s, -s, c, t["x"], t["y"]])
     prop, ttf = _font_props(t.get("font", ""), t["bold"], t["italic"])
     lines = t["value"].replace("\\n", "\n").split("\n")
     if ttf:
@@ -484,7 +570,7 @@ def build_silk(sd: SilkData, side: str, z: float, outline=None):
         try:
             g = text_geometry(t)
             if g is not None and not g.is_empty:
-                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if t["stroke"] > 0 and not t.get("knockout") else g)
+                geoms.append(g.buffer(max(t["stroke"], 0.05) * 0.18, quad_segs=1) if _thicken(t) else g)
         except Exception:
             continue
     if not geoms:
