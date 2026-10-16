@@ -356,6 +356,72 @@ def set_display(scale: int):
     log("display for new processes (dpi, w, h):", r.stdout.strip(), r.stderr.strip()[-200:])
 
 
+# ---------------------------------------------------------------- plugin conflict
+# A legacy (SWIG) action plugin that runs INSIDE the PCB editor process, like real-world assistant panels do: it opens a
+# floating tool window owned by the PCB editor over its right side (a WebView if available), raises it periodically and
+# keeps KiCad's UI thread busy for a while every second. IPCubed's overlay must still cover the canvas and take input.
+CONFLICT_PLUGIN = r"""
+import time
+import pcbnew
+import wx
+
+BUSY_MS = %(busy)d
+
+
+def _open():
+    frame = wx.FindWindowByName("PcbFrame")
+    if frame is None or not frame.IsShown():
+        wx.CallLater(2000, _open)
+        return
+    style = wx.DEFAULT_FRAME_STYLE | wx.FRAME_TOOL_WINDOW | wx.FRAME_FLOAT_ON_PARENT
+    panel = wx.Frame(frame, title="Side panel", style=style)
+    try:
+        import wx.html2
+        web = wx.html2.WebView.New(panel, backend=wx.html2.WebViewBackendEdge)
+        web.SetPage("<html><body style='background:#223'><h3 style='color:#ddd'>side panel</h3></body></html>", "")
+    except Exception:
+        wx.Panel(panel).SetBackgroundColour(wx.Colour(34, 34, 51))
+    r = frame.GetScreenRect()
+    panel.SetSize(380, max(r.height - 160, 460))
+    panel.SetPosition((r.right - 380 - 30, r.top + 110))
+    panel.Show()
+
+    def tick(evt=None):
+        panel.Raise()
+        t_end = time.perf_counter() + BUSY_MS / 1000.0
+        while time.perf_counter() < t_end:          # UI thread busy (in-process board work)
+            pass
+    panel._timer = wx.Timer(panel)
+    panel.Bind(wx.EVT_TIMER, tick, panel._timer)
+    panel._timer.Start(1000)
+
+
+class ConflictPanel(pcbnew.ActionPlugin):
+    def defaults(self):
+        self.name = "Side panel"
+        self.category = "test"
+        self.description = "conflict test"
+
+    def Run(self):
+        pass
+
+
+ConflictPanel().register()
+wx.CallLater(4000, _open)
+"""
+
+
+def install_conflict_plugin(busy_ms: int):
+    d = Path(os.environ["USERPROFILE"]) / "Documents" / "KiCad" / "10.0" / "scripting" / "plugins" / "conflict_panel"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "__init__.py").write_text(CONFLICT_PLUGIN % {"busy": busy_ms}, encoding="utf-8")
+    log("plugin conflict: in-process side panel installed, UI busy", busy_ms, "ms/s ->", d)
+
+
+def side_panel_open(proc) -> bool:
+    return any(title(h) == "Side panel" for h in kicad_windows(proc))
+
+
 # ---------------------------------------------------------------- main
 def run(a):
     kicad = Path(a.kicad)
@@ -388,6 +454,8 @@ def run(a):
                 t.parent.mkdir(parents=True, exist_ok=True)
                 t.write_bytes(z.read(n))
     log("plugin installed to", dest)
+    if a.conflict:
+        install_conflict_plugin(a.conflict_busy_ms)
 
     # 3. demo board, click 3D Live
     demos = kicad / "share" / "kicad" / "demos"
@@ -416,6 +484,10 @@ def run(a):
     time.sleep(15)
     handle_kicad_dialogs(p)
     shot("board")
+    if a.conflict:
+        ok = wait(lambda: side_panel_open(p), 60, 1, "conflicting side panel")
+        check("conflict_side_panel_open", bool(ok), "in-process plugin window over the PCB editor")
+        shot("with-side-panel")
     dump_children(top, OUT / "kicad-children.txt")
     results["info"]["kicad_rect"] = rect(top)
     results["info"]["kicad_dpi"] = u.GetDpiForWindow(top)
@@ -551,11 +623,14 @@ def main():
     ap.add_argument("--zip", required=True)
     ap.add_argument("--out", default="e2e-out")
     ap.add_argument("--scale", type=int, default=100)
+    ap.add_argument("--conflict", action="store_true", help="simulate a conflicting in-process plugin")
+    ap.add_argument("--conflict-busy-ms", type=int, default=300)
     a = ap.parse_args()
     global OUT
     OUT = Path(a.out)
     OUT.mkdir(parents=True, exist_ok=True)
     results["info"]["scale_requested"] = a.scale
+    results["info"]["plugin_conflict"] = a.conflict
     try:
         run(a)
     except Exception:  # noqa: BLE001
