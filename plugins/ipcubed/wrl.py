@@ -180,17 +180,21 @@ def _material(app: _Node | None):
     return (*rgb.tolist(), float(np.clip(1.0 - transp, 0.0, 1.0)))
 
 
-def _faces(coord_index: list[float]) -> list[list[int]]:
-    faces, cur = [], []
-    for v in coord_index:
+def _faces(coord_index: list[float]) -> list[tuple[int, list[int], list[int]]]:
+    """coordIndex -> [(yuz no, tepe indeksleri, coordIndex icindeki konumlari)]. Yuz no, -1 ile ayrilan sira (colorIndex icin)."""
+    faces, cur, cp, fno = [], [], [], 0
+    for i, v in enumerate(coord_index):
         if v < 0:
-            if len(cur) >= 3:
-                faces.append(cur)
-            cur = []
+            if cur:
+                if len(cur) >= 3:
+                    faces.append((fno, cur, cp))
+                fno += 1
+            cur, cp = [], []
         else:
             cur.append(int(v))
+            cp.append(i)
     if len(cur) >= 3:
-        faces.append(cur)
+        faces.append((fno, cur, cp))
     return faces
 
 
@@ -239,7 +243,7 @@ def _earcut_face(f, pts):
 
 
 def _ifs(node: _Node):
-    """IndexedFaceSet -> (points (V,3), tris (T,3), vcolor (V,3)|None, ccw, crease) yerel koordinatlarda."""
+    """IndexedFaceSet -> (points (V,3), tris (T,3), kose renkleri (T,3,3)|None, ccw, crease) yerel koordinatlarda."""
     if node._geo is not None:
         return node._geo
     coord = node.f.get("coord")
@@ -247,20 +251,64 @@ def _ifs(node: _Node):
     faces = _faces(node.f.get("coordIndex", []))
     res = None
     if len(pts) and faces:
-        faces = [f for f in faces if max(f) < len(pts)]
-        tris, owner = _triangulate(faces, pts) if faces else (np.zeros((0, 3), np.int64), None)
-        vcol = None
-        col = node.f.get("color")
-        if isinstance(col, _Node):
-            cc = np.array(col.f.get("color", []), np.float64).reshape(-1, 3)
-            if len(cc) == len(pts):
-                vcol = cc
+        faces = [f for f in faces if max(f[1]) < len(pts)]
+        tris, owner = _triangulate([f[1] for f in faces], pts) if faces else (np.zeros((0, 3), np.int64), None)
+        vcol = _corner_colors(node.f, faces, tris, owner) if len(tris) else None
         ccw = node.f.get("ccw", True)
         crease = node.f.get("creaseAngle", [0.0])
         crease = float(crease[0] if isinstance(crease, list) and crease else crease or 0.0)
         res = (pts, tris, vcol, bool(ccw), crease)
     node._geo = res if res is not None else ()
     return node._geo
+
+
+def _corner_colors(f: dict, faces, tris: np.ndarray, owner: np.ndarray):
+    """VRML renk kurallari -> her ucgen kosesinin rengi (T,3,3) | None.
+    colorPerVertex TRUE: colorIndex varsa coordIndex ile paralel (kose basina), yoksa coordIndex kullanilir.
+    colorPerVertex FALSE: colorIndex varsa yuz basina bir indeks, yoksa renkler yuz sirasinda.
+    (SolidWorks/Altium/uretici modellerinde yuz basina renk yaygin: yoksayilinca model tek renk gorunurdu.)"""
+    col = f.get("color")
+    if not isinstance(col, _Node):
+        return None
+    cc = np.array(col.f.get("color", []), np.float64).reshape(-1, 3)
+    if not len(cc):
+        return None
+    ci = f.get("colorIndex", [])
+    ci = [int(x) for x in ci] if isinstance(ci, list) else []
+    per_vertex = f.get("colorPerVertex", True)
+    per_vertex = bool(per_vertex[0] if isinstance(per_vertex, list) and per_vertex else per_vertex)
+    n = len(cc)
+    if not per_vertex:
+        fno = np.array([fc[0] for fc in faces], np.int64)[owner]
+        if ci:
+            idx = np.array([ci[k] if k < len(ci) else -1 for k in fno], np.int64)
+        else:
+            idx = fno
+        idx = np.where((idx >= 0) & (idx < n), idx, -1)
+        if (idx < 0).all():
+            return None
+        out = cc[np.clip(idx, 0, n - 1)]
+        out[idx < 0] = np.nan
+        return np.repeat(out[:, None, :], 3, axis=1)
+    if not ci:
+        if tris.max() >= n:
+            return None
+        return cc[tris]
+    # kose basina colorIndex: her yuzde tepe -> renk indeksi (yuzdeki konuma gore)
+    out = np.full((len(tris), 3, 3), np.nan)
+    maps = {}
+    for t, o in enumerate(owner):
+        m = maps.get(o)
+        if m is None:
+            _, verts, cpos = faces[o]
+            m = maps[o] = {v: (ci[p] if p < len(ci) else -1) for v, p in zip(verts, cpos)}
+        for k in range(3):
+            c = m.get(int(tris[t, k]), -1)
+            if 0 <= c < n:
+                out[t, k] = cc[c]
+    if np.isnan(out).all():
+        return None
+    return out
 
 
 def _box(f):
@@ -292,11 +340,15 @@ def _shape_arrays(node: _Node, M: np.ndarray, color):
         ccw = not ccw
     if not ccw:
         tris = tris[:, ::-1]
+        if vcol is not None:
+            vcol = vcol[:, ::-1]
     p0, p1, p2 = P[tris[:, 0]], P[tris[:, 1]], P[tris[:, 2]]
     fn = np.cross(p1 - p0, p2 - p0)
     flen = np.linalg.norm(fn, axis=1, keepdims=True)
     keep = flen[:, 0] > 1e-18
     tris, fn, flen = tris[keep], fn[keep], flen[keep]
+    if vcol is not None:
+        vcol = vcol[keep]
     if len(tris) == 0:
         return None
     flat = fn / flen
@@ -317,7 +369,8 @@ def _shape_arrays(node: _Node, M: np.ndarray, color):
         nrm = np.repeat(flat[:, None, :], 3, axis=1)
     pos = P[tris].reshape(-1, 3)
     if vcol is not None:
-        rgb = vcol[tris].reshape(-1, 3)
+        rgb = vcol.reshape(-1, 3)
+        rgb = np.where(np.isnan(rgb), np.array(color[:3], np.float64), rgb)   # rengi tanimsiz kose: malzeme rengi
         col = np.concatenate([rgb, np.full((len(rgb), 1), color[3])], axis=1)
     else:
         col = np.tile(np.array(color, np.float64), (len(pos), 1))
