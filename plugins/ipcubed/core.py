@@ -14,6 +14,23 @@ from .scene_builder import ViewerScene
 from .settings import Settings
 
 
+def _clamp_ssaa_output(renderer):
+    """pygfx'in SSAA cikis filtresi (mitchell) negatif lob'lu: koyu yuzeyin parlak komsusu olan kenarlarinda sonuc biraz
+    negatife duser, ardindan pow(renk, gamma) NaN verir. Cogu GPU NaN'i siyah yazar (gorunmez); Raspberry Pi (V3D) kanal kanal
+    doygun yazar: kamera durunca siyah modellerin kenarlarinda beyaz/renkli 1 piksel cizgiler (forum). pow'dan once 0'a kirp:
+    diger GPU'larda goruntu ayni kalir."""
+    try:
+        from pathlib import Path
+        op = renderer._output_pass
+        src = (Path(gfx.__file__).parent / "renderers" / "wgpu" / "wgsl" / "ssaa.wgsl").read_text(encoding="utf-8")
+        line = "let rgb = pow(color.rgb, gamma3);"
+        if line in src and "ssaa.wgsl" in op.wgsl:
+            op.wgsl = src.replace(line, "let rgb = pow(max(color.rgb, vec3<f32>(0.0)), gamma3);")
+    except Exception as e:  # noqa: BLE001  pygfx ic yapisi degistiyse: duzeltmesiz devam
+        from .log import _log
+        _log(f"ssaa kirpma uygulanamadi: {e}")
+
+
 class ViewerCore:
     def __init__(self, canvas, settings: Settings | None = None):
         from .sync import SyncThread
@@ -22,6 +39,7 @@ class ViewerCore:
         self.canvas = canvas
         self.vs = ViewerScene(self.cfg)
         self.renderer = gfx.WgpuRenderer(canvas)
+        _clamp_ssaa_output(self.renderer)
         self._quality_scale = None                 # bostayken pixel_scale (SSAA); hareket ederken 1
         self._interact_t = 0.0
         self.camera = gfx.PerspectiveCamera(self.cfg.fov_3d, 1.6)
