@@ -227,9 +227,9 @@ class ViewerScene:
 
     def _mask_filter_material(self):
         m = gfx.MeshBasicMaterial(color=self._filter_color())
-        try:   # alttakinin TERSINI mask rengiyle carp: bakir (koyu metal) altinda acik, cıplak FR4 altinda koyu yesil (KiCad / gercek kart)
+        try:   # hedef rengi kaynakla CARP: altta ne varsa mask rengiyle filtrelenir
             m.alpha_config = {"mode": "blend", "method": "blended", "color_op": "add", "alpha_op": "add",
-                              "color_src": "one-minus-dst", "color_dst": "zero", "alpha_src": "zero", "alpha_dst": "one"}
+                              "color_src": "dst", "color_dst": "zero", "alpha_src": "zero", "alpha_dst": "one"}
             m.depth_write = False
         except Exception:
             m.opacity = 0.85
