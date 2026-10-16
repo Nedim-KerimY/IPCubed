@@ -376,8 +376,8 @@ def _open():
     style = wx.DEFAULT_FRAME_STYLE | wx.FRAME_TOOL_WINDOW | wx.FRAME_FLOAT_ON_PARENT
     panel = wx.Frame(frame, title="Side panel", style=style)
     try:
-        import wx.html2
-        web = wx.html2.WebView.New(panel, backend=wx.html2.WebViewBackendEdge)
+        from wx import html2
+        web = html2.WebView.New(panel, backend=html2.WebViewBackendEdge)
         web.SetPage("<html><body style='background:#223'><h3 style='color:#ddd'>side panel</h3></body></html>", "")
     except Exception:
         wx.Panel(panel).SetBackgroundColour(wx.Colour(34, 34, 51))
