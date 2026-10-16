@@ -112,15 +112,48 @@ def find_kicad_ancestor(names=("kicad", "pcbnew"), max_hops: int = 6) -> int | N
     return None
 
 
-def send(cmd: str, timeout: float = 2.0) -> bool:
+def ask(cmd: str, timeout: float = 2.0) -> str | None:
+    """Calisan viewer'a komut; cevap satiri ya da None (viewer yok)."""
     try:
         port = int(port_path().read_text().strip())
         with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
             s.sendall((cmd + "\n").encode())
             s.settimeout(timeout)
-            return s.recv(16).startswith(b"ok")
+            r = s.recv(256).decode("utf-8", "replace").strip()
+            return r if r.startswith("ok") else None
     except (OSError, ValueError):
-        return False
+        return None
+
+
+def send(cmd: str, timeout: float = 2.0) -> bool:
+    return ask(cmd, timeout) is not None
+
+
+def viewer_id() -> str:
+    """Viewer kimligi: bagli KiCad sureci + eklenti kurulumu (yeniden kurulunca dosya zamani degisir)."""
+    try:
+        stamp = int(Path(__file__).stat().st_mtime)
+    except OSError:
+        stamp = 0
+    return f"{os.environ.get('IPCUBED_KICAD_PID', '')}:{stamp}:{Path(__file__).resolve().parent}"
+
+
+def own_viewer(timeout: float = 2.0) -> bool | None:
+    """Calisan viewer bu KiCad'in ve bu kurulumun mu? None: viewer yok. Eski surumler 'id' bilmez (yalniz 'ok'): yabanci."""
+    r = ask("id", timeout)
+    if r is None:
+        return None
+    return r == "ok id " + viewer_id()
+
+
+def retire_foreign_viewer() -> None:
+    """Baska bir KiCad'e (or. kapanirken asili kalmis eski KiCad) ya da eski kuruluma ait viewer komutlari alip kendi (artik
+    olmayan) editorunu arardi: 3D hic acilmaz, 'cannot find the PCB editor window' derdi. Onu kapat, yenisi baslasin."""
+    import time
+    send("quit", timeout=1.0)
+    t_end = time.monotonic() + 6
+    while time.monotonic() < t_end and send("ping", timeout=0.3):
+        time.sleep(0.3)
 
 
 # KiCad, eklenti surecine kendi Python yollarini verir (Linux: PYTHONPATH=/usr/lib/python3/dist-packages, MATPLOTLIBRC=/etc/
@@ -237,8 +270,14 @@ def main(cmd: str = "toggle") -> int:
         kp = find_kicad_ancestor()
         if kp is not None:
             os.environ.setdefault("IPCUBED_KICAD_PID", str(kp))
-    if send(cmd):
+    own = own_viewer()
+    if own:
+        send(cmd)
         return 0
+    if own is False:
+        if cmd == "quit":
+            return 0
+        retire_foreign_viewer()
     if cmd == "quit":
         return 0
     show = cmd in ("toggle", "show")
