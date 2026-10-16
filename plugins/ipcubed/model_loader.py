@@ -13,6 +13,7 @@ import numpy as np
 from .paths import cache_dir
 
 CACHE_VERSION = 5
+WRL_VERSION = 2       # WRL yukleyicisi degisince artir (yalniz WRL cache'i yenilenir; STEP donusumleri korunur)
 DEFAULT_COLOR = (0.62, 0.62, 0.65, 1.0)
 
 
@@ -31,7 +32,8 @@ class MeshData:
 def _key(path: Path, quality: str) -> str:
     st = path.stat()
     h = hashlib.blake2b(digest_size=12)
-    h.update(f"{CACHE_VERSION}|{quality}|{path.resolve()}|{st.st_size}|{st.st_mtime_ns}".encode())
+    ver = f"{CACHE_VERSION}w{WRL_VERSION}" if path.suffix.lower() in (".wrl", ".wrz", ".vrml") else CACHE_VERSION
+    h.update(f"{ver}|{quality}|{path.resolve()}|{st.st_size}|{st.st_mtime_ns}".encode())
     return h.hexdigest()
 
 
