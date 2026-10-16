@@ -104,6 +104,16 @@ def _outline_from_shapes(shapes, edge_layer) -> list[list[tuple[float, float]]]:
             r = math.hypot(s.radius_point.x * NM - c[0], s.radius_point.y * NM - c[1]) if hasattr(s, "radius_point") else 0
             n = 64
             lines.append([(c[0] + r * math.cos(2 * math.pi * i / n), c[1] + r * math.sin(2 * math.pi * i / n)) for i in range(n + 1)])
+        elif t == "BoardBezier":                      # egri kenarlar (yuvarlatilmis oyuklar): okunmazsa kontur kapanmaz, kart dikdortgene duserdi
+            p0, p1, p2, p3 = _v(s.start), _v(s.control1), _v(s.control2), _v(s.end)
+            n = 24
+            pts = []
+            for i in range(n + 1):
+                u = i / n
+                a, b, c, d = (1 - u) ** 3, 3 * (1 - u) ** 2 * u, 3 * (1 - u) * u * u, u ** 3
+                pts.append((a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]))
+            pts[0], pts[-1] = p0, p3                      # uclar tam: komsu cizgilerle birlesir
+            lines.append(pts)
         elif t == "BoardRectangle":
             a, b = _v(s.top_left), _v(s.bottom_right)
             lines.append([(a[0], a[1]), (b[0], a[1]), (b[0], b[1]), (a[0], b[1]), (a[0], a[1])])

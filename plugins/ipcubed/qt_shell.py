@@ -42,7 +42,7 @@ def _gpu_fatal(why: str, tried):
     """Kullanilabilir GPU yok: isaretli hata mesajini viewer.log'a yazip cik. ctl._check_started bunu okuyup diyalogda gosterir."""
     from .gpu import UNSUPPORTED_TEXT
     _log(f"GPU kullanilamiyor: {why}; adaptorler: {tried}")
-    print(f"IPCUBED_GPU_UNSUPPORTED\n{UNSUPPORTED_TEXT}\n\nAdapters found: {', '.join(tried) or 'none'}\n{why}", flush=True)
+    print(f"IPCUBED_GPU_UNSUPPORTED\n{UNSUPPORTED_TEXT}\n\nReason: {why[:600]}\nAdapters found: {', '.join(tried) or 'none'}", flush=True)
     import os
     os._exit(3)
 

@@ -109,6 +109,11 @@ def outline_to_polygon(lines: list[list[tuple[float, float]]]):
     if not segs:
         return None
     minx, miny, maxx, maxy = unary_union(segs).bounds
+    try:                                              # sessiz dikdortgen yerine nedeni gunlukte gorunsun (destek icin)
+        from .log import _log
+        _log(f"kart konturu kapanmadi ({len(lines)} Edge.Cuts parcasi): sinir kutusu kullanildi")
+    except Exception:  # noqa: BLE001
+        pass
     return shapely.geometry.box(minx, miny, maxx, maxy)
 
 
