@@ -663,6 +663,17 @@ def run(a):
         time.sleep(3)
         shot("after-key-3")
 
+    # 9. 3D Live again: the running viewer takes the command (toggle), it is not replaced by a new one
+    if found:
+        before = {p.pid for p in ipcubed_procs("viewer")}
+        foreground(top)
+        time.sleep(0.5)
+        click(*found)
+        hidden = wait(lambda: not ((h := overlay_window()) and u.IsWindowVisible(h)), 15, 0.5, "3D hidden by 3D Live")
+        after = {p.pid for p in ipcubed_procs("viewer")}
+        check("3d_live_toggles_same_viewer", bool(hidden) and before == after, f"viewer before={sorted(before)} after={sorted(after)}")
+        shot("after-3d-live-again")
+
 
 def main():
     ap = argparse.ArgumentParser()
