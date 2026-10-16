@@ -53,6 +53,19 @@ def _debug_log_hint() -> str:
     return os.path.join(tempfile.gettempdir(), "ipcubed.log")
 
 
+class _InputLog(QtCore.QObject):
+    _TYPES = {QtCore.QEvent.MouseButtonPress: "mouse down", QtCore.QEvent.MouseButtonRelease: "mouse up",
+              QtCore.QEvent.KeyPress: "key", QtCore.QEvent.FocusIn: "focus in", QtCore.QEvent.FocusOut: "focus out",
+              QtCore.QEvent.WindowActivate: "activate", QtCore.QEvent.WindowDeactivate: "deactivate"}
+
+    def eventFilter(self, obj, e):
+        n = self._TYPES.get(e.type())
+        if n:
+            extra = f" {e.key():#x}" if e.type() == QtCore.QEvent.KeyPress else ""
+            _log(f"girdi: {n}{extra} ({type(obj).__name__})")
+        return False
+
+
 class ViewerFrame(QtWidgets.QWidget):
     """Gorunum penceresi: solda (istege bagli) 3D Ayarlari paneli + sagda 3D viewport. KiCad uzerine bindirilen / harici pencere olan bu."""
     closed = QtCore.Signal()
@@ -139,6 +152,11 @@ class ViewerShell(QtCore.QObject):
 
         self.canvas.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.canvas.customContextMenuRequested.connect(self._context_menu)
+        import os
+        if os.environ.get("IPCUBED_DEBUG"):        # girdi teshisi: fare/tus/odak olaylari viewer'a ulasiyor mu
+            self._input_log = _InputLog()
+            self.canvas.installEventFilter(self._input_log)
+            self.frame.installEventFilter(self._input_log)
         QtGui.QShortcut(QtGui.QKeySequence("3"), self.frame, activated=self.toggle)
         QtGui.QShortcut(QtGui.QKeySequence("Esc"), self.frame, activated=self._esc)
         QtGui.QShortcut(QtGui.QKeySequence("2"), self.frame, activated=self.hide3d)

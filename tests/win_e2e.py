@@ -132,6 +132,35 @@ def foreground(h):
     u.SetForegroundWindow(h)
 
 
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("flags", wt.DWORD), ("hwndActive", H), ("hwndFocus", H), ("hwndCapture", H),
+                ("hwndMenuOwner", H), ("hwndMoveSize", H), ("hwndCaret", H), ("rcCaret", wt.RECT)]
+
+
+def describe(h) -> str:
+    if not h:
+        return "-"
+    pid = wt.DWORD()
+    u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+    try:
+        name = psutil.Process(pid.value).name()
+    except psutil.Error:
+        name = "?"
+    return f"{int(h):#x} {name} {cls(h)} '{title(h)[:30]}'"
+
+
+def input_state(what: str):
+    """Who has the keyboard / mouse now (to explain an input check that failed)."""
+    pt = wt.POINT()
+    u.GetCursorPos(ctypes.byref(pt))
+    u.WindowFromPoint.restype = H
+    u.GetForegroundWindow.restype = H
+    gi = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    u.GetGUIThreadInfo(0, ctypes.byref(gi))
+    log(f"input [{what}]: foreground={describe(u.GetForegroundWindow())}; under cursor ({pt.x},{pt.y})="
+        f"{describe(u.WindowFromPoint(pt))}; focus={describe(gi.hwndFocus)}; capture={describe(gi.hwndCapture)}")
+
+
 def click(x, y):
     u.SetCursorPos(int(x), int(y))
     time.sleep(0.15)
@@ -372,6 +401,7 @@ import pcbnew
 import wx
 
 BUSY_MS = %(busy)d
+RAISE = %(raise_)d
 
 
 def _open():
@@ -393,7 +423,8 @@ def _open():
     panel.Show()
 
     def tick(evt=None):
-        panel.Raise()
+        if RAISE:
+            panel.Raise()
         t_end = time.perf_counter() + BUSY_MS / 1000.0
         while time.perf_counter() < t_end:          # UI thread busy (in-process board work)
             pass
@@ -417,11 +448,11 @@ wx.CallLater(4000, _open)
 """
 
 
-def install_conflict_plugin(busy_ms: int):
+def install_conflict_plugin(busy_ms: int, raise_: bool = True):
     d = Path(os.environ["USERPROFILE"]) / "Documents" / "KiCad" / "10.0" / "scripting" / "plugins" / "conflict_panel"
     d.mkdir(parents=True, exist_ok=True)
-    (d / "__init__.py").write_text(CONFLICT_PLUGIN % {"busy": busy_ms}, encoding="utf-8")
-    log("plugin conflict: in-process side panel installed, UI busy", busy_ms, "ms/s ->", d)
+    (d / "__init__.py").write_text(CONFLICT_PLUGIN % {"busy": busy_ms, "raise_": int(raise_)}, encoding="utf-8")
+    log("plugin conflict: in-process side panel installed, UI busy", busy_ms, "ms/s, raise every 1 s:", raise_, "->", d)
 
 
 def side_panel_open(proc) -> bool:
@@ -461,7 +492,7 @@ def run(a):
                 t.write_bytes(z.read(n))
     log("plugin installed to", dest)
     if a.conflict:
-        install_conflict_plugin(a.conflict_busy_ms)
+        install_conflict_plugin(a.conflict_busy_ms, not a.conflict_no_raise)
 
     # 3. demo board, click 3D Live
     demos = kicad / "share" / "kicad" / "demos"
@@ -602,7 +633,11 @@ def run(a):
     x, y, w, h = rect(ov)
     box = (x + w // 4, y + h // 4, x + 3 * w // 4, y + 3 * h // 4)
     before = np.asarray(ImageGrab.grab(box, all_screens=True), dtype=np.float32)
+    u.SetCursorPos(x + w // 2, y + h // 2)
+    time.sleep(0.2)
+    input_state("before drag")
     drag(x + w // 2, y + h // 2, x + w // 2 + w // 5, y + h // 2 + h // 8)
+    input_state("after drag")
     time.sleep(2)
     after = np.asarray(ImageGrab.grab(box, all_screens=True), dtype=np.float32)
     diff = float(np.abs(after - before).mean())
@@ -612,6 +647,7 @@ def run(a):
     # 8. keys: 2 -> 2D, 3 in the PCB canvas -> 3D
     foreground(ov)
     time.sleep(0.5)
+    input_state("before key 2")
     key(0x32)
     time.sleep(4)
     hidden = not (u.IsWindow(ov) and u.IsWindowVisible(ov))
@@ -636,6 +672,7 @@ def main():
     ap.add_argument("--scale", type=int, default=100)
     ap.add_argument("--conflict", action="store_true", help="simulate a conflicting in-process plugin")
     ap.add_argument("--conflict-busy-ms", type=int, default=300)
+    ap.add_argument("--conflict-no-raise", action="store_true", help="the conflicting window does not raise itself")
     a = ap.parse_args()
     global OUT
     OUT = Path(a.out)

@@ -26,6 +26,7 @@ jobs:
         # Run workflow > matrix: a JSON list to run only some scenarios, e.g. [{"scale":125,"gl":"mesa","conflict":"--conflict"}]
         # mesa: software OpenGL (KiCad uses its OpenGL canvas like on a PC with a GPU); none: KiCad's software (Cairo) canvas;
         # --conflict: plugin conflict (another plugin's window inside the PCB editor, UI thread busy)
+        # tag: optional artifact name suffix (several conflict variants in one run)
         include: ${{ fromJSON(github.event.inputs.matrix || '[{"scale":100,"gl":"mesa","conflict":""},{"scale":125,"gl":"mesa","conflict":""},{"scale":100,"gl":"none","conflict":""},{"scale":125,"gl":"mesa","conflict":"--conflict"}]') }}
     runs-on: windows-latest
     timeout-minutes: 45
@@ -91,5 +92,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: win-e2e-${{ matrix.scale }}-${{ matrix.gl }}${{ matrix.conflict && '-conflict' || '' }}
+          name: win-e2e-${{ matrix.scale }}-${{ matrix.gl }}${{ matrix.tag && format('-{0}', matrix.tag) || (matrix.conflict && '-conflict' || '') }}
           path: e2e-out
