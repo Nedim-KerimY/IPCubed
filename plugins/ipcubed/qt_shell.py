@@ -410,6 +410,10 @@ class ViewerShell(QtCore.QObject):
         if up:
             self._gone_since = None
             self._seen_editor = True
+            self._up_streak = getattr(self, "_up_streak", 0) + 1
+            if self.core.sync_parked and self._up_streak >= 2:     # iki ardisik kontrolde (>= 0.5 sn) editor yerinde: devam
+                _log("PCB duzenleyici yerinde -> senkron devam")
+                self.core.resume_sync()
             if not self._editor_up:
                 _log("PCB duzenleyici bulundu")
                 self._editor_up = True
@@ -418,7 +422,10 @@ class ViewerShell(QtCore.QObject):
                 if self._pending_show:
                     self._pending_show = False
                     self.show3d()
-        elif self._editor_up:
+        else:
+            self._up_streak = 0
+            self.core.park_sync()                    # editor kayboldu (KiCad kapaniyor olabilir): hemen istek gonderme
+        if not up and self._editor_up:
             self._gone_since = self._gone_since or now
             if now - self._gone_since > 5:
                 self._editor_up = False
@@ -451,6 +458,55 @@ class ViewerShell(QtCore.QObject):
                 if not alive:
                     _log("KiCad kapandi -> cikis")
                     self.quit()
+                else:
+                    self._check_stuck(now)
+        elif up or self._persist:
+            self._stuck_since = None
+
+    _stuck_since = None
+    _stuck_cpu = 0.0
+
+    def _check_stuck(self, now):
+        """KiCad 10.0.x hatasi: kapanirken gelen bir API istegi (bizim ya da baska bir eklentinin) hic cevaplanmaz ve KiCad, API
+        sunucusunu durdururken o istegi sonsuza dek bekler: penceresi kapanir ama sureci kalir (Linux'ta askida surec; Windows'ta
+        KiCad yeniden acilamaz). Bagli oldugumuz KiCad sureci 20 sn boyunca hic penceresiz (simge durumundaki pencere de pencere
+        sayilir) ve bostaysa takilmistir: sonlandirilir. Normal kapanis bir iki saniye surer."""
+        import psutil
+        from .ctl import kicad_pid
+        pid = kicad_pid()
+        has = getattr(self.embedder, "pid_has_windows", None)
+        if pid is None or has is None:
+            return
+        try:
+            p = psutil.Process(pid)
+            name = p.name().lower()
+            if not (name.startswith("kicad") or name.startswith("pcbnew")) or "cli" in name:
+                return
+            cpu = sum(p.cpu_times()[:2])
+        except psutil.Error:
+            return
+        try:
+            windows = has(pid)
+        except Exception:  # noqa: BLE001
+            windows = None
+        if windows is not False:                 # pencere var ya da bilinmiyor: dokunma
+            self._stuck_since = None
+            return
+        if self._stuck_since is None or cpu - self._stuck_cpu > 1.0:
+            self._stuck_since, self._stuck_cpu = now, cpu   # calisiyor (kapanis isi suruyor olabilir): yeniden say
+            return
+        if now - self._stuck_since < 20:
+            return
+        _log(f"KiCad (pid {pid}) penceresiz ve bosta 20 sn: API kapanisinda takildi -> sonlandiriliyor")
+        try:
+            p.terminate()
+            try:
+                p.wait(5)
+            except psutil.TimeoutExpired:
+                p.kill()
+        except psutil.Error:
+            pass
+        self._stuck_since = None
 
     def _watch_kicad(self):
         """Bagimsiz mod: editor penceresi izlenemez; KiCad sureci gorulduyse ve artik yoksa cik."""
@@ -465,6 +521,8 @@ class ViewerShell(QtCore.QObject):
             return
         if alive:
             self._seen_editor = True
+            if self.core.sync_parked and now - self.core.sync_parked_at > 3:   # editor izlenemiyor: kisa beklemeden sonra devam
+                self.core.resume_sync()
         elif self._seen_editor:
             _log("KiCad kapandi -> cikis")
             self.quit()
@@ -481,6 +539,7 @@ class ViewerShell(QtCore.QObject):
             self._watch_kicad()
         if self.embedded and self._shown and not self._external:
             if not self.embedder.follow(self.frame):
+                self.core.park_sync()         # her karede kontrol: KiCad kapanirken ilk firsatta istek gondermeyi birak
                 _log("follow: editor penceresi yok -> gizle")
                 self._finish_hide()           # pcbnew kapandi/kayboldu
         if self._closing and not self.core.rig.animating:
@@ -575,6 +634,11 @@ def run(args):
     theme.apply_app_font(app)
     shell = ViewerShell(embed=not getattr(args, "standalone", False), show_now=getattr(args, "show", False),
                         persist=getattr(args, "persist", False))
+    try:                                  # SIGTERM (oturum kapanisi, kill): normal cikis -> senkron/isci surecleri de kapanir
+        import signal
+        signal.signal(signal.SIGTERM, lambda *_: QtCore.QTimer.singleShot(0, shell.quit))
+    except (ValueError, OSError, AttributeError):
+        pass
     code = app.exec()
     try:
         if port_file().read_text().strip() == str(shell.server.serverPort()):

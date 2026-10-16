@@ -68,6 +68,20 @@ class ViewerCore:
         if self.sync is not None:
             self.sync.stop()
             self.sync = None
+        self.sync_parked = False
+
+    sync_parked = False              # senkron KiCad'e istek gondermiyor (editor kapaniyor olabilir; bkz. SyncThread.parked)
+    sync_parked_at = 0.0
+
+    def park_sync(self):
+        if self.sync is not None and not self.sync_parked:
+            self.sync_parked, self.sync_parked_at = True, time.monotonic()
+            self.sync.park()
+
+    def resume_sync(self):
+        if self.sync is not None and self.sync_parked:
+            self.sync_parked = False
+            self.sync.resume()
 
     def set_polling_fast(self, fast: bool):
         if self.sync is not None:
@@ -788,6 +802,9 @@ class ViewerCore:
             elif kind == "status":
                 self.status = payload
                 self.on_status(payload)
+            elif kind == "parked":
+                if not self.sync_parked:
+                    self.sync_parked, self.sync_parked_at = True, time.monotonic()
         if not getattr(self, "_framed", False) and self.vs.board_bounds:
             self.rig.set_aspect(max(0.1, self.canvas.get_logical_size()[0] / max(1, self.canvas.get_logical_size()[1])))
             self.rig.frame(self.vs.board_bounds, self.vs.thickness, self.cfg)

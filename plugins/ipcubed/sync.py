@@ -28,6 +28,12 @@ class SyncThread(threading.Thread):
         self.request_full = threading.Event()
         self.request_full.set()                # ilk calismada tam snapshot
         self.check_now = threading.Event()     # geometri degisimini hemen kontrol et (3D acilirken)
+        # KiCad 10.0.x: kapanirken (olay dongusu bittikten sonra) gelen API istegi hic cevaplanmaz ve KiCad'in API sunucusu
+        # o istegi beklerken kapanamaz: surec penceresiz asili kalir (kinng.cpp, master'da duzeltildi). Bu yuzden editor
+        # kapaniyor gibiyse ("no handler", baglanti hatasi, editor penceresi kayboldu) hic istek gonderilmez; editor penceresi
+        # yeniden gorulunce kabuk resume() der.
+        self.parked = threading.Event()
+        self.unpark = threading.Event()
 
     def run(self):
         from kipy.errors import ApiError
@@ -43,6 +49,12 @@ class SyncThread(threading.Thread):
         backoff = 0.0                         # son yenilemenin suresine gore kontrol araligi uzar (yavas/buyuk kartlarda firtina olmasin)
         full_inflight = False
         while not self._halt.is_set():
+            if self.parked.is_set():
+                if not self.unpark.wait(0.25):
+                    continue
+                self.parked.clear()
+                self.unpark.clear()
+                _log("senkron: devam")
             try:
                 if src is None:
                     src = KiCadSource()
@@ -116,6 +128,9 @@ class SyncThread(threading.Thread):
                 if full_inflight:
                     self.request_full.set()
                     full_inflight = False
+                if "no handler" in str(e).lower():   # PCB duzenleyici kapandi (KiCad kapaniyor olabilir): istek gonderme
+                    self._park("editor kapandi")
+                    continue
                 time.sleep(0.5)
                 continue
             except Exception as e:  # noqa: BLE001  KiCad kapandi / yeniden aciliyor
@@ -125,11 +140,27 @@ class SyncThread(threading.Thread):
                     full_inflight = False
                 self.out.put(("status", f"KiCad connection lost: {type(e).__name__}"))
                 src = None
+                self._park("baglanti koptu")
                 time.sleep(1.0)
                 continue
             if prev_snap is None or not self.visible:
                 self.check_now.clear()          # henuz is yok: bos donguye girmesin
             self.check_now.wait(self.interval if self.visible else self.paused_interval)
+
+    def _park(self, why: str):
+        if not self.parked.is_set():
+            _log(f"senkron: beklemede ({why})")
+        self.unpark.clear()
+        self.parked.set()
+        self.out.put(("parked", why))
+
+    def park(self):
+        """Kabuk: editor penceresi kayboldu. Bir sonraki istekten once durur."""
+        self.unpark.clear()
+        self.parked.set()
+
+    def resume(self):
+        self.unpark.set()
 
     _was_busy = False
     ship_files = False            # ayri surecte True: buyuk veri dosyaya, kuyruga hafif kopya

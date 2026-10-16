@@ -33,12 +33,18 @@ for name, args in {"IsWindowVisible": [H], "IsWindow": [H], "GetWindowTextW": [H
                    "GetClassNameW": [H, wt.LPWSTR, ctypes.c_int], "GetWindowThreadProcessId": [H, ctypes.POINTER(wt.DWORD)],
                    "GetWindowRect": [H, ctypes.POINTER(wt.RECT)], "ShowWindow": [H, ctypes.c_int], "SetForegroundWindow": [H],
                    "PostMessageW": [H, wt.UINT, wt.WPARAM, wt.LPARAM], "GetDlgItem": [H, ctypes.c_int],
-                   "GetWindow": [H, wt.UINT], "GetDpiForWindow": [H]}.items():
+                   "GetWindow": [H, wt.UINT], "GetDpiForWindow": [H], "GetDlgCtrlID": [H]}.items():
     getattr(u, name).argtypes = args
 u.GetDlgItem.restype = H
 u.GetWindow.restype = H
 ENUM = ctypes.WINFUNCTYPE(wt.BOOL, H, wt.LPARAM)
-BM_CLICK, WM_CLOSE = 0x00F5, 0x0010
+BM_CLICK, WM_CLOSE, WM_COMMAND = 0x00F5, 0x0010, 0x0111
+
+
+def click_button(dlg, c):
+    """WM_COMMAND to the dialog (as if the button was clicked). BM_CLICK can fail while the dialog is not the active window
+    (e.g. another plugin's window keeps raising itself)."""
+    u.PostMessageW(dlg, WM_COMMAND, u.GetDlgCtrlID(c) & 0xFFFF, c or 0)
 
 OUT = Path("e2e-out")
 T0 = time.monotonic()
@@ -115,7 +121,7 @@ def press(h, labels) -> bool:
     want = {x.lower() for x in labels}
     for c in windows(h):
         if cls(c) == "Button" and title(c).replace("&", "").strip().lower() in want:
-            u.PostMessageW(c, BM_CLICK, 0, 0)
+            click_button(h, c)
             return True
     return False
 
@@ -531,7 +537,12 @@ def run(a):
         shot("ipcubed-dialog")
         if "download" in txt.lower() and ("would you like" in txt.lower() or "requires" in txt.lower()):
             results["info"]["seconds_click_to_dialog"] = round(time.monotonic() - t_click, 1)
-            u.PostMessageW(u.GetDlgItem(dlg, 6), BM_CLICK, 0, 0)  # IDYES = Download
+            for i in range(5):
+                click_button(dlg, u.GetDlgItem(dlg, 6))          # IDYES = Download
+                if wait(lambda: not u.IsWindow(dlg), 5, 0.5, "download dialog closes"):
+                    break
+                log(f"download dialog still open (attempt {i + 1})")
+                foreground(dlg)
             log("pressed Download")
             break
         press(dlg, ["OK", "Yes"])

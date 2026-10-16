@@ -227,6 +227,22 @@ class WinEmbedder:
         self.canvas_hwnd = self.tab_hwnd = self.content_hwnd = None
         return self.top is not None
 
+    def pid_has_windows(self, pid: int):
+        """Surecin gorunur ust-duzey penceresi var mi (simge durumundakiler dahil)?"""
+        found = []
+
+        @self.ct.WINFUNCTYPE(self.wt.BOOL, self.wt.HWND, self.wt.LPARAM)
+        def cb(h, _):
+            p = self.wt.DWORD()
+            self.u.GetWindowThreadProcessId(h, self.ct.byref(p))
+            if p.value == pid and self.u.IsWindowVisible(h):
+                found.append(h)
+                return False
+            return True
+
+        self.u.EnumWindows(cb, 0)
+        return bool(found)
+
     def canvas_focused(self) -> bool:
         """PCB duzenleyicinin canvas'i klavye odaginda mi? (Metin kutularinda '3' yazarken tetiklenmesin.)"""
         ct, wt = self.ct, self.wt

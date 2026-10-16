@@ -126,6 +126,22 @@ class X11Embedder:
     def editor_present(self) -> bool:
         return self._find_editor() is not None
 
+    def pid_has_windows(self, pid: int):
+        """Surecin pencere yoneticisinde hic penceresi var mi (simge durumundakiler dahil)? Bilinmiyorsa None."""
+        p = self._safe(lambda: self.root.get_full_property(self.A_CLIENT_LIST, self.X.AnyPropertyType))
+        if p is None:
+            return None                                    # pencere yoneticisi listesi yok: karar verilemez
+        for i in p.value:
+            w = self.d.create_resource_object("window", i)
+            wp = self._pid(w)
+            if wp == pid:
+                return True
+            if wp is None:                                 # PID'siz pencere: KiCad'inki olabilir
+                cls = self._safe(lambda: w.get_wm_class())
+                if cls and any(k in (cls[0] + " " + cls[1]).lower() for k in ("kicad", "pcbnew")):
+                    return None
+        return False
+
     def _locate(self):
         """-> {'canvas': (x, y, w, h)} mantiksal piksel | None"""
         if self.top is not None and not (self._viewable(self.top) and self.canvas is not None and self._viewable(self.canvas[0])):

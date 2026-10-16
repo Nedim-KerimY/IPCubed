@@ -61,6 +61,10 @@ def _sync_main(cmd_q, out_q, ppid=None):
             t.request_full.set()
         elif name == "check":
             t.check_now.set()
+        elif name == "park":
+            t.park()
+        elif name == "resume":
+            t.resume()
         elif name in ("hl2d", "hlclear"):          # KiCad 2D vurgusu: ayri baglanti, sync thread'ini bekletmez
             from .kicad_actions import clear_highlight, highlight_nets
             fn, args = (highlight_nets, (cmd[1],)) if name == "hl2d" else (clear_highlight, ())
@@ -111,6 +115,12 @@ class SyncProcess:
         if v != self._visible:
             self._visible = v
             self._send(("visible", v))
+
+    def park(self):
+        self._send(("park",))
+
+    def resume(self):
+        self._send(("resume",))
 
     def is_alive(self) -> bool:
         return self._p.is_alive()
