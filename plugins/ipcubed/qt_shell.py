@@ -402,6 +402,7 @@ class ViewerShell(QtCore.QObject):
                 and now - getattr(self, "_pending_since", now) > 10:
             self._warned_no_editor = True           # sessizce beklemek yerine nedenini soyle (bir kez)
             _log("3D istendi ama PCB duzenleyici penceresi bulunamadi")
+            self._no_editor_report()
             self._notice("IPCubed cannot find the PCB editor window to show the 3D view on.\n\n"
                          "If the Appearance panel (Layers / Objects / Nets) is hidden, show it again: "
                          "View > Panels > Appearance. Then press 3D Live again.\n\n"
@@ -555,6 +556,29 @@ class ViewerShell(QtCore.QObject):
         self._notice("The 3D view cannot draw with this graphics adapter:\n" + self.gpu.description + "\n\n" + gpu.UNSUPPORTED_TEXT
                      + f"\n\nDetails: {config_dir() / 'viewer.log'}")
 
+    def _no_editor_report(self):
+        """viewer.log'a (hata ayiklama kapali olsa da): hangi KiCad surecinde arandi, o surec var mi, pencereleri."""
+        try:
+            import psutil
+            from .ctl import kicad_pid
+            pid = kicad_pid()
+            line = f"PCB duzenleyici bulunamadi: KiCad pid={pid}"
+            if pid is not None:
+                try:
+                    p = psutil.Process(pid)
+                    line += f" ({p.name()}, {p.status()})"
+                except psutil.Error:
+                    line += " (surec yok)"
+                has = getattr(self.embedder, "pid_has_windows", None)
+                if has is not None:
+                    line += f", pencere var={has(pid)}"
+            kicads = [f"{p.info['pid']}:{p.info['name']}" for p in psutil.process_iter(["pid", "name"])
+                      if (p.info["name"] or "").lower().startswith(("kicad", "pcbnew"))]
+            print(line + f"; KiCad surecleri: {', '.join(kicads) or 'yok'}; kart ipucu='{getattr(self.embedder, 'hint', '')}'",
+                  flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"PCB duzenleyici bulunamadi (rapor hatasi: {e})", flush=True)
+
     def _notice(self, text: str):
         """Engellemeyen bilgi kutusu (viewer dongusu durmasin), KiCad'in ustunde."""
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, TITLE, text, QtWidgets.QMessageBox.Ok)
@@ -592,6 +616,10 @@ class ViewerShell(QtCore.QObject):
         for line in bytes(sock.readAll()).decode("utf-8", "ignore").splitlines():
             cmd = line.strip().lower()
             _log(f"komut: {cmd}")
+            if cmd == "id":                    # 3D Live: bu viewer bu KiCad'in ve bu kurulumun mu (ctl.own_viewer)
+                from .ctl import viewer_id
+                sock.write(("ok id " + viewer_id() + "\n").encode())
+                continue
             try:
                 self._run_cmd(cmd)
             except Exception:  # noqa: BLE001
@@ -623,10 +651,14 @@ def run(args):
     import os
     os.environ.setdefault("QT_API", "pyside6")
     from .ctl import send
-    if send("ping", timeout=0.5):          # zaten calisan bir viewer var: tek kopya
+    from .ctl import own_viewer, retire_foreign_viewer
+    own = own_viewer(timeout=0.5)
+    if own:                                # zaten calisan bir viewer var: tek kopya
         if getattr(args, "show", False):
             send("show")
         return 0
+    if own is False:                       # baska KiCad'in / eski kurulumun viewer'i: komutlari o almasin
+        retire_foreign_viewer()
     sys.setswitchinterval(0.002)          # arka plan thread'leri (model/ornekleyici) render thread'ini uzun sure bekletmesin
     app = QtWidgets.QApplication(sys.argv[:1])
     app.setApplicationName("ipcubed")
