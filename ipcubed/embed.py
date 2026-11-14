@@ -31,6 +31,10 @@ class WinEmbedder:
         from ctypes import wintypes
         self.ct, self.wt = ctypes, wintypes
         self.u = ctypes.windll.user32
+        self.u.GetForegroundWindow.argtypes = []
+        self.u.GetForegroundWindow.restype = wintypes.HWND
+        self.u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        self.u.GetWindowThreadProcessId.restype = wintypes.DWORD
         self.u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         self.u.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
         self.u.SetWindowLongPtrW.restype = ctypes.c_void_p
@@ -186,6 +190,16 @@ class WinEmbedder:
         # wx, canvas'i saran bir panele odaklanir: dikdortgeni canvas'la ortusuyorsa canvas odaktadir
         rf, rc = self._rect(f), self._rect(gl)
         return bool(rf and rc and all(abs(a - b) <= 6 for a, b in zip(rf, rc)))
+
+    def _kicad_foreground(self) -> bool:
+        """Gate embedded SpaceMouse motion while another application has focus."""
+        foreground = self.u.GetForegroundWindow()
+        if not foreground or not self.top:
+            return False
+        pid, top_pid = self.wt.DWORD(), self.wt.DWORD()
+        self.u.GetWindowThreadProcessId(foreground, self.ct.byref(pid))
+        self.u.GetWindowThreadProcessId(self.top, self.ct.byref(top_pid))
+        return bool(pid.value and pid.value == top_pid.value)
 
     _key_down = False
 

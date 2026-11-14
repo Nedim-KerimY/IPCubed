@@ -66,6 +66,11 @@ class Settings:
     yaw_3d: float = 0.0
     anim_ms: int = 700
     projection: str = "perspective"           # "perspective" | "orthographic"
+    spacemouse_enabled: bool = True
+    spacemouse_move_speed: int = 100          # percent
+    spacemouse_turn_speed: int = 100
+    spacemouse_roll: bool = True
+    spacemouse_reverse: bool = False
     show_stats: bool = False                 # sag altta FPS/CPU/RAM/GPU yazisi
     show_view_cube: bool = True              # sag ustte ViewCube (gizlenebilir)
     custom_presets: dict = field(default_factory=dict)   # ice aktarilan renk ayarlari: ad -> degerler
