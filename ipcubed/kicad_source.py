@@ -443,14 +443,14 @@ class KiCadSource:
     def _refresh_fp_silk(self) -> bool:
         """Degisen footprint'lerin silk/bakir/maske ozetini yenile (yalniz onlar Python nesnesine cevrilir). -> degisen var mi."""
         from kipy.board_types import FootprintInstance
-        from .silk import fp_silk_part
+        from .silk import fp_silk_part_shaped
         seen, changed = set(), False
         for k, h, p in self._raw_footprints():
             seen.add(k)
             if self._fp_hash.get(k) == h and k in self._fp_silk:
                 continue
             self._fp_hash[k] = h
-            self._fp_silk[k] = fp_silk_part(FootprintInstance(proto=p), self._silk_extra)
+            self._fp_silk[k] = fp_silk_part_shaped(FootprintInstance(proto=p), self._silk_extra, self.board)
             changed = True
         for k in set(self._fp_silk) - seen:              # silinen footprint'ler
             self._fp_silk.pop(k, None)
@@ -475,8 +475,8 @@ class KiCadSource:
                 k = KIID(); k.value = s
                 kids.append(k)
             for f in self.board.get_items_by_id(kids):
-                from .silk import fp_silk_part
-                self._fp_silk[f.id.value] = fp_silk_part(f, self._silk_extra)
+                from .silk import fp_silk_part_shaped
+                self._fp_silk[f.id.value] = fp_silk_part_shaped(f, self._silk_extra, self.board)
                 self._fp_hash.pop(f.id.value, None)      # silk mesh'i henuz eski konumda: geometri kontrolu yeniden uretsin
                 fd = _footprint_data(f)
                 self._poses[fd.kiid] = (fd.x, fd.y, fd.angle, fd.bottom)
