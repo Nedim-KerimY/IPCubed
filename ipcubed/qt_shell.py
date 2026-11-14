@@ -406,6 +406,9 @@ class ViewerShell(QtCore.QObject):
                 self._shown = True
 
     def quit(self):
+        if hasattr(self, "_save_timer") and self._save_timer.isActive():
+            self._save_timer.stop()
+            self.cfg.save()
         if self._external:
             self.return_to_kicad()
         if self._shown:
