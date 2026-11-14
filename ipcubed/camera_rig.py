@@ -25,6 +25,11 @@ def _ease(t: float) -> float:
     return 0.5 - 0.5 * math.cos(math.pi * min(1.0, max(0.0, t)))      # smoothstep-cos
 
 
+def _nearest_angle(current: float, target: float) -> float:
+    """Equivalent target within half a turn, even after many mouse orbits."""
+    return current + (target - current + 180.0) % 360.0 - 180.0
+
+
 def basis(yaw: float, pitch: float):
     """-> (konum yonu d, ileri f, sag r, yukari u). Z-yukari dunya."""
     y, p = math.radians(yaw), math.radians(pitch)
@@ -97,6 +102,7 @@ class CameraRig:
     # --- animasyon -----------------------------------------------------------------
     def go(self, mode: str, ms: int = 700, immediate: bool = False):
         goal = self.s2d if mode == "2d" else self.s3d
+        goal = replace(goal, yaw=_nearest_angle(self.s.yaw, goal.yaw))
         self.mode = mode
         if immediate or ms <= 0:
             self.s = replace(goal)
@@ -110,7 +116,7 @@ class CameraRig:
         cur = self.s
         if yaw is None:
             yaw = cur.yaw
-        yaw_t = cur.yaw + ((yaw - cur.yaw + 180.0) % 360.0 - 180.0)
+        yaw_t = _nearest_angle(cur.yaw, yaw)
         goal = replace(cur, yaw=yaw_t, pitch=pitch, fov=self.s3d.fov if cur.fov < 10 else cur.fov)
         self.mode = "3d"
         if ms <= 0:
