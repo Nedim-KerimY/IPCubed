@@ -83,5 +83,7 @@ jobs:
             KIND="--prerelease --latest=false"; TITLE="IPCubed $TAG (pre-release, testing)"
           fi
           echo "current latest: ${CUR:-none}; publishing $TAG with $KIND"
-          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" $KIND --title "$TITLE" \
-            --notes "Install: KiCad > Plugin and Content Manager > Install from File... and pick IPCubed-pcm.zip (do not unzip it). Do not use GitHub's Code > Download ZIP. See the README."
+          # release-notes/<tag>.md (if present) goes above the install instructions
+          INSTALL="Install: KiCad > Plugin and Content Manager > Install from File... and pick IPCubed-pcm.zip (do not unzip it). Do not use GitHub's Code > Download ZIP. See the README."
+          { if [ -f "release-notes/$TAG.md" ]; then cat "release-notes/$TAG.md"; echo; echo "---"; echo; fi; echo "$INSTALL"; } > notes.md
+          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" $KIND --title "$TITLE" --notes-file notes.md

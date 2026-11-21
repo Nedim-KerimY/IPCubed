@@ -73,6 +73,14 @@ This `kicad-plugin` branch contains only what KiCad needs to install and run the
 The viewer runs in the background while KiCad is open and **exits by itself when KiCad closes**.
 Edits you make in KiCad (moving footprints, tracks, zones, silkscreen, ...) appear live in 3D.
 
+### SpaceMouse (Windows)
+
+Click the 3D view to focus it, then use the SpaceMouse cap to pan, orbit and roll; push to zoom in, pull to zoom out.
+Motion stops when the 3D view loses focus, is hidden, or a dialog is open. **3D settings → Adjust → SpaceMouse** has
+enable, roll, reverse-motion and pan/zoom and rotation speed settings. While the cap moves (and 150 ms after), wheel zoom
+pauses so 3DxWare's wheel emulation does not zoom twice. Buttons and Linux SpaceMouse support are not implemented.
+(Contributed by [@jrymk](https://github.com/jrymk).)
+
 ## Update / uninstall
 
 * Plugin and Content Manager: install the new zip over the old one, or use *Uninstall* there.
@@ -124,7 +132,7 @@ You can delete them to reset the plugin.
 * `python tools/build_pcm_zip.py` builds `dist/IPCubed-<version>-pcm.zip`. The *Package KiCad plugin* GitHub Actions
   workflow runs it on every push to this branch and publishes the zip as the `v<version>` **pre-release** (for testers;
   the README download link keeps pointing to the current latest version).
-  Bump `versions[0].version` in `metadata.json` for a new release. To make a version the default download for everyone:
+  Bump `versions[0].version` in `metadata.json` for a new release; `release-notes/v<version>.md`, if present, becomes the release notes. To make a version the default download for everyone:
   *Actions → Package KiCad plugin → Run workflow* with **make_latest** ticked.
 * To bring in changes from `main`: `git merge main` (the `ipcubed/` → `plugins/ipcubed/` move is followed by git).
 

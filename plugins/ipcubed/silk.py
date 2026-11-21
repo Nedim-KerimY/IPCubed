@@ -53,7 +53,7 @@ def _xf(x, y, px, py, c, s):
 
 
 # ------------------------------------------------------------------------------ sekiller
-def _shape_items(proto_shape, px=0, py=0, c=1, s=0, rot=False):
+def _shape_items(proto_shape, px=0, py=0, c=1, s=0, rot=False, *, text_ink=False):
     """protobuf shape -> [('seg',...),('poly',outline,holes,filled,w),...] dunya koord."""
     out = []
     attrs = proto_shape.attributes
@@ -76,6 +76,11 @@ def _shape_items(proto_shape, px=0, py=0, c=1, s=0, rot=False):
         a = proto_shape.arc
         out.append(("arc", T(a.start), T(a.mid), T(a.end), w))
     elif kind == "polygon":
+        # GetTextAsShapes wraps solid glyph geometry in EDA_SHAPE proxies, which
+        # do not set the graphic fill attribute. These polygons are ink, not
+        # outlined board graphics. Keep this override local to the text API.
+        if text_ink:
+            filled, w = True, 0.0
         for pw in proto_shape.polygon.polygons:
             def ring(r):
                 return np.array([T(n.point) for n in r.nodes if n.HasField("point")])
@@ -303,7 +308,7 @@ def attach_kicad_shapes(board, pending):
             items = []
             for gs in entry.shapes.shapes:
                 try:
-                    items.extend(_shape_items(gs))
+                    items.extend(_shape_items(gs, text_ink=True))
                 except Exception:  # noqa: BLE001
                     continue
             if items:

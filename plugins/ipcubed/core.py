@@ -36,6 +36,7 @@ class ViewerCore:
         from .sync import SyncThread
 
         self.cfg = settings or Settings.load()
+        self.block_wheel = lambda: False  # Optional input owner, supplied by the shell.
         self.canvas = canvas
         self.vs = ViewerScene(self.cfg)
         self.renderer = gfx.WgpuRenderer(canvas)
@@ -241,10 +242,10 @@ class ViewerCore:
             ratio = float(self.canvas.get_pixel_ratio())      # yuksek DPI'da doku da buyur: keskin kup
         except Exception:  # noqa: BLE001
             ratio = 1.0
-        key = (round(s.yaw, 1), round(s.pitch, 1), self.cube.hover, vis, ratio)
+        key = (round(s.yaw, 1), round(s.pitch, 1), round(s.roll, 1), self.cube.hover, vis, ratio)
         if key != self._cube_key:
             self._cube_key = key
-            arr = self.cube.render(s.yaw, min(s.pitch, 90.0), vis, ratio)
+            arr = self.cube.render(s.yaw, min(s.pitch, 90.0), vis, ratio, roll=s.roll)
             if arr.shape != self._cube_tex.data.shape:
                 self._cube_tex = gfx.Texture(arr, dim=2)
                 self._cube_quad.material.map = self._cube_tex
@@ -260,7 +261,7 @@ class ViewerCore:
         if not (0 <= x <= CUBE_S and 0 <= y <= CUBE_S):
             return None
         s = self.rig.s
-        return self.cube.hit(x, y, s.yaw, min(s.pitch, 90.0), self.cfg.show_view_cube)
+        return self.cube.hit(x, y, s.yaw, min(s.pitch, 90.0), self.cfg.show_view_cube, roll=s.roll)
 
     def toggle_cube(self, on=None):
         self.cfg.show_view_cube = (not self.cfg.show_view_cube) if on is None else bool(on)
@@ -291,6 +292,8 @@ class ViewerCore:
 
     # ---------------------------------------------------------------- girdi
     def _on_event(self, e):
+        if e.type == "wheel" and self.block_wheel():
+            return
         if e.type in ("pointer_move", "wheel") and (self._drag or e.type == "wheel"):
             self._interacting()
         t = e.type

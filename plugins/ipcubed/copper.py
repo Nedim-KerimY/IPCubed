@@ -15,6 +15,7 @@ NM = 1e-6
 F_CU, B_CU = 3, 34
 F_MASK, B_MASK = 42, 41
 PSS_CIRCLE, PSS_RECT, PSS_OVAL, PSS_TRAP, PSS_ROUNDRECT, PSS_CHAMFER, PSS_CUSTOM = 1, 2, 3, 4, 5, 6, 7
+ZT_COPPER, ZT_TEARDROP = 1, 4  # KiCad IPC ZoneType; teardrops are copper too.
 
 
 @dataclass
@@ -302,7 +303,7 @@ def fetch_pads(board, ids: set, nid, prev: "CopperData | None" = None, sigs: dic
 def fetch_zones(board, ids: set, nid) -> dict:
     zones: dict = {}
     for z in board.get_zones():
-        if int(z.type) != 1 or not z.filled:           # ZT_COPPER
+        if int(z.type) not in (ZT_COPPER, ZT_TEARDROP) or not z.filled:
             continue
         zn = nid(z.net)
         for layer, polys_ in z.filled_polygons.items():

@@ -39,6 +39,10 @@ class WinEmbedder:
         from ctypes import wintypes
         self.ct, self.wt = ctypes, wintypes
         self.u = ctypes.windll.user32
+        self.u.GetForegroundWindow.argtypes = []
+        self.u.GetForegroundWindow.restype = wintypes.HWND
+        self.u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        self.u.GetWindowThreadProcessId.restype = wintypes.DWORD
         self.u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         self.u.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
         self.u.SetWindowLongPtrW.restype = ctypes.c_void_p
