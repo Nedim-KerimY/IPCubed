@@ -112,6 +112,10 @@ class ViewerShell(QtCore.QObject):
         self._closing = False
         self._pending_show = False
         self._shown = False
+        from .spacemouse import start as start_spacemouse
+        self.spacemouse = start_spacemouse(self.frame, self._spacemouse_active, self.core.rig.space_motion, self.cfg)
+        if self.spacemouse is not None:
+            self.core.block_wheel = self.spacemouse.blocks_wheel
         self.timer = QtCore.QTimer(self)
         self.timer.setInterval(8)
         self.timer.timeout.connect(self._tick)
@@ -386,7 +390,24 @@ class ViewerShell(QtCore.QObject):
                     _log("KiCad kapandi -> cikis")
                     self.quit()
 
+    def _spacemouse_active(self):
+        if not self._shown or self._closing or not self.core.loaded or self.core.rig.animating:
+            return False
+        app = QtWidgets.QApplication
+        if app.activeModalWidget() is not None or app.activePopupWidget() is not None:
+            return False
+        focus = app.focusWidget()
+        if self.frame.isActiveWindow():
+            return focus is self.canvas or (focus is not None and self.canvas.isAncestorOf(focus))
+        # In embedded mode the Windows foreground top-level window can belong
+        # to KiCad rather than Qt; never accept input over a dialog or text box.
+        return bool(self.embedded and not self._external
+                    and hasattr(self.embedder, "_kicad_foreground")
+                    and self.embedder._kicad_foreground() and self.embedder.canvas_focused())
+
     def _tick(self):
+        if self.spacemouse is not None:
+            self.spacemouse.tick()
         self.core.tick()
         busy = self._shown or self._closing or self.core.vs.pending() or self.core.rig.animating
         want = 8 if busy else 25                 # 3D kapaliyken seyrek uyan: bosta CPU ~1/3
@@ -406,6 +427,11 @@ class ViewerShell(QtCore.QObject):
                 self._shown = True
 
     def quit(self):
+        if self.spacemouse is not None:
+            self.spacemouse.close()
+        if hasattr(self, "_save_timer") and self._save_timer.isActive():
+            self._save_timer.stop()
+            self.cfg.save()
         if self._external:
             self.return_to_kicad()
         if self._shown:
@@ -482,6 +508,8 @@ def run(args):
     except OSError:
         pass
     try:
+        if shell.spacemouse is not None:
+            shell.spacemouse.close()
         shell.core.close()
     finally:
         _kill_children()

@@ -63,8 +63,8 @@ class ViewCube:
 
     # ------------------------------------------------------------------ geometri (perspektif)
     @staticmethod
-    def _projector(yaw, pitch):
-        d, f, r, u = basis(yaw, pitch)
+    def _projector(yaw, pitch, roll=0.0):
+        d, f, r, u = basis(yaw, pitch, roll)
 
         def p(v):
             v = np.asarray(v, float)
@@ -73,9 +73,9 @@ class ViewCube:
             return QtCore.QPointF(CX + float(v @ r) * sc * K, CY - float(v @ u) * sc * K)
         return d, p
 
-    def _cells(self, yaw, pitch):
+    def _cells(self, yaw, pitch, roll=0.0):
         """Gorunur yuzlerin hucreleri: [(derinlik, ad, normal, B, C, etiket, (i, j), poligon, yon)] arkadan one."""
-        d, p = self._projector(yaw, pitch)
+        d, p = self._projector(yaw, pitch, roll)
         out = []
         for name, n, B, C, label in FACES:
             n, B, C = np.array(n, float), np.array(B, float), np.array(C, float)
@@ -94,7 +94,7 @@ class ViewCube:
         return out, p
 
     # ------------------------------------------------------------------ cizim
-    def render(self, yaw: float, pitch: float, visible: bool, ratio: float = 1.0) -> np.ndarray:
+    def render(self, yaw: float, pitch: float, visible: bool, ratio: float = 1.0, roll: float = 0.0) -> np.ndarray:
         px = max(1, int(round(S * ratio)))
         img = QtGui.QImage(px, px, QtGui.QImage.Format_RGBA8888_Premultiplied)
         img.fill(QtCore.Qt.transparent)
@@ -102,7 +102,7 @@ class ViewCube:
         p.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.TextAntialiasing | QtGui.QPainter.SmoothPixmapTransform)
         p.scale(px / S, px / S)
         if visible:
-            self._draw_cube(p, yaw, pitch)
+            self._draw_cube(p, yaw, pitch, roll)
             self._draw_btn(p, QtCore.QRectF(0, 0, BTN, BTN), "home", self.hover == "home")
         self._draw_btn(p, QtCore.QRectF(S - BTN, 0, BTN, BTN), "toggle_on" if visible else "toggle_off", self.hover == "toggle")
         p.end()
@@ -111,8 +111,8 @@ class ViewCube:
         arr[..., :3] = np.where(a > 0, np.minimum(255.0, arr[..., :3].astype(np.float32) * 255.0 / np.maximum(a, 1.0)), 0).astype(np.uint8)
         return arr
 
-    def _draw_cube(self, p: QtGui.QPainter, yaw, pitch):
-        cells, proj = self._cells(yaw, pitch)
+    def _draw_cube(self, p: QtGui.QPainter, yaw, pitch, roll=0.0):
+        cells, proj = self._cells(yaw, pitch, roll)
         hov = self.hover[1] if isinstance(self.hover, tuple) else None
         for nd, name, n, B, C, label, (i, j), poly, direction in cells:
             hovered = hov is not None and direction == hov
@@ -170,7 +170,7 @@ class ViewCube:
             p.drawLine(c, QtCore.QPointF(c.x() - 6.1, c.y() + 3.5))
 
     # ------------------------------------------------------------------ vurus
-    def hit(self, x: float, y: float, yaw: float, pitch: float, visible: bool):
+    def hit(self, x: float, y: float, yaw: float, pitch: float, visible: bool, roll: float = 0.0):
         """(x, y): bolgeye gore mantiksal px. -> ("dir", (x,y,z)) | "home" | "toggle" | None"""
         if S - BTN <= x <= S and 0 <= y <= BTN:
             return "toggle"
@@ -179,7 +179,7 @@ class ViewCube:
         if 0 <= x <= BTN and 0 <= y <= BTN:
             return "home"
         pt = QtCore.QPointF(x, y)
-        cells, _ = self._cells(yaw, pitch)
+        cells, _ = self._cells(yaw, pitch, roll)
         for nd, name, n, B, C, label, ij, poly, direction in reversed(cells):          # en yakin yuz once
             if poly.containsPoint(pt, QtCore.Qt.OddEvenFill):
                 return ("dir", direction)

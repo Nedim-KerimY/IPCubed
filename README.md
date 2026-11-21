@@ -29,6 +29,26 @@ python -m ipcubed.ctl toggle|show|hide|quit    # control a running daemon (bind 
 python -m ipcubed.autostart [--off]      # start at login (Windows registry / XDG autostart / macOS LaunchAgent)
 ```
 
+## SpaceMouse (Windows)
+
+Click the 3D viewport to focus it, then use the SpaceMouse cap to pan, orbit,
+and roll. Push to zoom in; pull to zoom out. Motion stops when the viewport
+loses focus, is hidden, or a dialog is open.
+
+**3D Settings → Adjust → SpaceMouse** provides enable, roll, reverse-motion,
+and separate pan/zoom and rotation speed controls. Settings save automatically
+and are shared across boards.
+
+The Windows backend uses Raw Input without an additional Python dependency.
+It reads motion directly rather than using 3DxWare application-specific motion
+profiles. Dedicated buttons, display integration, and Linux/macOS SpaceMouse
+backends are not implemented.
+
+While the cap moves, and for 150 ms afterward, wheel zoom in the viewport
+pauses to prevent duplicate zoom from 3DxWare wheel emulation. This also pauses
+a physical mouse wheel during the gesture; wheel zoom returns at rest.
+No global driver profiles or mouse settings are changed.
+
 ## Platform notes
 
 | | Overlay on KiCad + `3` hotkey | Notes |

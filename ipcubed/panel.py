@@ -230,6 +230,24 @@ class SettingsWindow(QtWidgets.QWidget):
         self.cube_check.toggled.connect(lambda v: self._set("show_view_cube", bool(v)))
         fl.addRow(self.cube_check)
         bl.addWidget(g)
+        import sys
+        if sys.platform == "win32":
+            g = QtWidgets.QGroupBox("SpaceMouse"); fl = QtWidgets.QFormLayout(g)
+            for key, label in (("spacemouse_enabled", "Enable SpaceMouse"),
+                               ("spacemouse_roll", "Allow roll"),
+                               ("spacemouse_reverse", "Reverse motion")):
+                cb = QtWidgets.QCheckBox(label)
+                cb.setChecked(getattr(cfg, key))
+                if key == "spacemouse_enabled":
+                    cb.setToolTip("While the cap moves, wheel zoom pauses to prevent duplicate zoom from the driver. Wheel zoom returns when the cap rests.")
+                cb.toggled.connect(lambda v, k=key: self._set(k, bool(v)))
+                fl.addRow(cb)
+            fl.addRow("Pan / zoom speed (%)", self._slider("spacemouse_move_speed", 10, 300))
+            fl.addRow("Rotation speed (%)", self._slider("spacemouse_turn_speed", 10, 300))
+            note = QtWidgets.QLabel("Six-axis navigation while the 3D viewport is focused.")
+            note.setWordWrap(True)
+            fl.addRow(note)
+            bl.addWidget(g)
         bl.addStretch(1)
         row = QtWidgets.QHBoxLayout()
         b = QtWidgets.QPushButton("Reset"); b.clicked.connect(self._reset_tuning); row.addWidget(b)

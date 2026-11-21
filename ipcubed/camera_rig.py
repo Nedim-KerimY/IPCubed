@@ -19,19 +19,28 @@ class RigState:
     yaw: float = 0.0           # derece
     pitch: float = 48.0        # derece, 90 = tam ustten
     fov: float = 35.0          # derece (dikey)
+    roll: float = 0.0          # screen roll; ordinary mouse navigation keeps this unchanged
 
 
 def _ease(t: float) -> float:
     return 0.5 - 0.5 * math.cos(math.pi * min(1.0, max(0.0, t)))      # smoothstep-cos
 
 
-def basis(yaw: float, pitch: float):
+def _nearest_angle(current: float, target: float) -> float:
+    """Equivalent target within half a turn, even after many mouse orbits."""
+    return current + (target - current + 180.0) % 360.0 - 180.0
+
+
+def basis(yaw: float, pitch: float, roll: float = 0.0):
     """-> (konum yonu d, ileri f, sag r, yukari u). Z-yukari dunya."""
     y, p = math.radians(yaw), math.radians(pitch)
     d = np.array([math.cos(p) * math.sin(y), -math.cos(p) * math.cos(y), math.sin(p)])
     f = -d
     r = np.array([math.cos(y), math.sin(y), 0.0])
     u = np.cross(r, f)
+    if roll:
+        a = math.radians(roll)
+        r, u = r * math.cos(a) + u * math.sin(a), u * math.cos(a) - r * math.sin(a)
     return d, f, r, u
 
 
@@ -53,7 +62,7 @@ class CameraRig:
     # --- poz uygulama --------------------------------------------------------------
     def apply(self):
         s = self.s
-        d, f, r, u = basis(s.yaw, min(s.pitch, 90.0))
+        d, f, r, u = basis(s.yaw, min(s.pitch, 90.0), s.roll)
         dist = s.view_h / (2 * math.tan(math.radians(s.fov) / 2))
         pos = np.array(s.target) + d * dist
         cam = self.camera
@@ -97,6 +106,8 @@ class CameraRig:
     # --- animasyon -----------------------------------------------------------------
     def go(self, mode: str, ms: int = 700, immediate: bool = False):
         goal = self.s2d if mode == "2d" else self.s3d
+        goal = replace(goal, yaw=_nearest_angle(self.s.yaw, goal.yaw),
+                       roll=_nearest_angle(self.s.roll, goal.roll))
         self.mode = mode
         if immediate or ms <= 0:
             self.s = replace(goal)
@@ -110,8 +121,9 @@ class CameraRig:
         cur = self.s
         if yaw is None:
             yaw = cur.yaw
-        yaw_t = cur.yaw + ((yaw - cur.yaw + 180.0) % 360.0 - 180.0)
-        goal = replace(cur, yaw=yaw_t, pitch=pitch, fov=self.s3d.fov if cur.fov < 10 else cur.fov)
+        yaw_t = _nearest_angle(cur.yaw, yaw)
+        goal = replace(cur, yaw=yaw_t, pitch=pitch, roll=_nearest_angle(cur.roll, 0.0),
+                       fov=self.s3d.fov if cur.fov < 10 else cur.fov)
         self.mode = "3d"
         if ms <= 0:
             self.s = goal
@@ -157,6 +169,7 @@ class CameraRig:
             llerp(a.view_h, b.view_h) * lift,
             lerp(a.yaw, b.yaw), lerp(a.pitch, b.pitch),
             llerp(a.fov, b.fov),
+            lerp(a.roll, b.roll),
         )
         if k >= 1.0:
             self.s = replace(b)
@@ -168,7 +181,7 @@ class CameraRig:
     def _pix_to_plane(self, nx: float, ny: float):
         """Ekran (-1..1) -> z=plane_z duzleminde dunya noktasi."""
         s = self.s
-        d, f, r, u = basis(s.yaw, min(s.pitch, 90.0))
+        d, f, r, u = basis(s.yaw, min(s.pitch, 90.0), s.roll)
         th = math.tan(math.radians(s.fov) / 2)
         dist = s.view_h / (2 * th)
         pos = np.array(s.target) + d * dist
@@ -192,11 +205,44 @@ class CameraRig:
         if self._anim:
             return
         s = self.s
-        _, _, r, u = basis(s.yaw, min(s.pitch, 90.0))
+        _, _, r, u = basis(s.yaw, min(s.pitch, 90.0), s.roll)
         scale = s.view_h / viewport_h
         t = np.array(s.target) - r * dx_px * scale + u * dy_px * scale
         # zemin duzleminde kal: yatay duzlem hareketi
         s.target = (t[0], t[1], s.target[2])
+        self.apply(); self.on_change()
+
+    def space_motion(self, axes, dt: float, move_speed=1.0, turn_speed=1.0):
+        """Six normalized HID axes: screen pan, dolly, and unrestricted orbit.
+
+        HID X is right, Y is away, Z is down. Rotate in the current camera
+        frame, then recover yaw/pitch/roll for mouse control and the ViewCube.
+        Matrix rotation avoids pitch clamps/gimbal lock when crossing a pole.
+        """
+        values = np.asarray(axes, dtype=float)
+        if values.shape != (6,) or not np.isfinite(values).all() or not math.isfinite(dt):
+            return
+        if self._anim or dt <= 0 or not np.any(values):
+            return
+        dt = min(dt, .05)  # No jump after a slow frame or stalled event loop.
+        tx, ty, tz, rx, ry, rz = np.clip(values, -1.0, 1.0)
+        s = self.s
+        d, _, r, u = basis(s.yaw, s.pitch, s.roll)
+        s.target = tuple(np.asarray(s.target) + (-tx * r + tz * u) * s.view_h * move_speed * dt)
+        s.view_h = max(2.0, min(2000.0, s.view_h * math.exp(-ty * move_speed * dt * 2.0)))
+        rotation = (-rx * r + rz * u - ry * d) * math.radians(90) * turn_speed * dt
+        angle = np.linalg.norm(rotation)
+        if angle > 0:
+            axis = rotation / angle
+            def rotate(v):
+                return v * math.cos(angle) + np.cross(axis, v) * math.sin(angle) + axis * np.dot(axis, v) * (1 - math.cos(angle))
+            d, r = rotate(d), rotate(r)
+            s.pitch = math.degrees(math.asin(float(np.clip(d[2], -1, 1))))
+            if math.hypot(d[0], d[1]) > 1e-9:
+                s.yaw = math.degrees(math.atan2(d[0], -d[1]))
+            _, _, r0, u0 = basis(s.yaw, s.pitch)
+            s.roll = math.degrees(math.atan2(float(np.dot(r, u0)), float(np.dot(r, r0))))
+        self.mode = "3d"
         self.apply(); self.on_change()
 
     def zoom(self, factor: float, nx: float = 0.0, ny: float = 0.0):
